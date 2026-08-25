@@ -15,6 +15,8 @@ from payroll import (
     get_pay_history,
     get_payslip_record,
     get_liabilities_report,
+    get_ytd_summary,
+    export_history_csv,
     run_payroll,
     BRACKET_PRESETS,
 )
@@ -74,6 +76,8 @@ class EmployeeCreate(BaseModel):
     state: Optional[str] = None
     # Optional company tag for multi-company setups.
     company_id: Optional[str] = None
+    # Pre-tax 401(k) contribution as a percent of gross pay (0-100).
+    retirement_401k_percent: float = 0.0
 
 
 class EmployeeUpdate(BaseModel):
@@ -87,6 +91,7 @@ class EmployeeUpdate(BaseModel):
     filing_status: Optional[str] = None
     state: Optional[str] = None
     company_id: Optional[str] = None
+    retirement_401k_percent: Optional[float] = None
 
 
 class PayslipRequest(BaseModel):
@@ -119,6 +124,7 @@ async def create_employee(payload: EmployeeCreate):
             filing_status=payload.filing_status,
             state=payload.state,
             company_id=payload.company_id,
+            retirement_401k_percent=Decimal(str(payload.retirement_401k_percent)),
         )
         stored = add_employee(employee)
         return JSONResponse(content={
@@ -130,6 +136,7 @@ async def create_employee(payload: EmployeeCreate):
             "filing_status": stored.filing_status,
             "state": stored.state,
             "company_id": stored.company_id,
+            "retirement_401k_percent": float(stored.retirement_401k_percent),
         }, status_code=200)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
@@ -148,6 +155,7 @@ async def get_all_employees(company_id: Optional[str] = None):
             "filing_status": e.filing_status,
             "state": e.state,
             "company_id": e.company_id,
+            "retirement_401k_percent": float(e.retirement_401k_percent),
         }
         for e in list_employees(company_id=company_id)
     ], status_code=200)
@@ -168,6 +176,7 @@ async def read_employee(employee_id: int):
         "filing_status": employee.filing_status,
         "state": employee.state,
         "company_id": employee.company_id,
+        "retirement_401k_percent": float(employee.retirement_401k_percent),
     }, status_code=200)
 
 
@@ -231,6 +240,7 @@ async def modify_employee(employee_id: int, payload: EmployeeUpdate):
         "filing_status": updated.filing_status,
         "state": updated.state,
         "company_id": updated.company_id,
+        "retirement_401k_percent": float(updated.retirement_401k_percent),
     }, status_code=200)
 
 
@@ -241,6 +251,32 @@ async def read_liabilities(company_id: Optional[str] = None):
     across all recorded payslips, optionally filtered by company_id.
     """
     return JSONResponse(content=get_liabilities_report(company_id=company_id), status_code=200)
+
+
+@app.get("/payroll/employees/{employee_id}/ytd")
+async def read_ytd_summary(employee_id: int):
+    """
+    Year-to-date (all recorded periods) summary for one employee: wages,
+    401(k), income-tax wages, every withholding, deductions, and net pay.
+    """
+    if get_employee(employee_id) is None:
+        return JSONResponse(content={"error": f"Employee {employee_id} not found"}, status_code=404)
+    return JSONResponse(content=get_ytd_summary(employee_id), status_code=200)
+
+
+@app.get("/payroll/export.csv")
+async def export_payroll_csv(company_id: Optional[str] = None,
+                             employee_id: Optional[int] = None):
+    """
+    Export recorded payslips as a CSV payroll journal, optionally scoped
+    to a company and/or a single employee.
+    """
+    csv_text = export_history_csv(company_id=company_id, employee_id=employee_id)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=payroll_journal.csv"},
+    )
 
 
 @app.get("/payroll/employees/{employee_id}/payslips/{history_id}/pdf")

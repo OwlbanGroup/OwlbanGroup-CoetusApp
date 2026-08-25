@@ -9,6 +9,7 @@ from fpdf import FPDF
 
 _MONEY_FIELDS = [
     ("gross_pay", "Gross Pay"),
+    ("retirement_401k", "401(k) Contribution (pre-tax)"),
     ("tax_withheld", "Federal Tax Withheld"),
     ("state_tax_withheld", "State Tax Withheld"),
     ("social_security", "Social Security"),

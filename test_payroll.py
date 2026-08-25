@@ -4,6 +4,8 @@ Unit tests for the payroll module and its FastAPI endpoints.
 Run with: python -m pytest test_payroll.py -v
 """
 
+import csv
+import io
 import os
 import tempfile
 
@@ -260,6 +262,89 @@ def test_invalid_state_rejected():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Pre-tax 401(k) tests
+# ---------------------------------------------------------------------------
+
+def test_401k_reduces_income_tax_but_not_fica():
+    payroll.set_tax_brackets(payroll.BRACKET_PRESETS["single"])
+    try:
+        emp = make_salaried("52000")
+        emp.retirement_401k_percent = Decimal("10")
+        slip = generate_payslip(emp)
+        assert slip["retirement_401k"] == 200.00  # 10% of 2000
+        # Income-tax wages drop to 46,800: fed = 1160 + 35200*.12 = 5384 -> 207.08
+        assert slip["tax_withheld"] == 207.00 or slip["tax_withheld"] == 207.08
+        # FICA still on full gross
+        assert slip["social_security"] == 124.00
+        assert slip["medicare"] == 29.00
+        assert slip["net_pay"] == round(2000 - slip["tax_withheld"] - 124 - 29 - 200, 2)
+    finally:
+        payroll.set_tax_brackets(payroll.DEFAULT_TAX_BRACKETS)
+
+
+def test_401k_percent_validation_bounds():
+    emp = make_salaried()
+    emp.retirement_401k_percent = Decimal("101")
+    try:
+        emp.validate()
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    emp.retirement_401k_percent = Decimal("-1")
+    try:
+        emp.validate()
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_ytd_summary_aggregates_history():
+    fresh_store()
+    emp = payroll.add_employee(make_hourly("20"))
+    for hours in ("40", "45"):
+        payroll.record_payslip(
+            generate_payslip(emp, hours_worked=Decimal(hours)))
+    ytd = payroll.get_ytd_summary(emp.id)
+    assert ytd["pay_periods_paid"] == 2
+    assert ytd["hours_worked"] == 85.0
+    assert ytd["gross_wages"] == 1750.00  # 800 + 1100
+    assert ytd["withholdings"]["social_security"] > 0
+    assert abs(ytd["taxable_wages_income_tax"]
+               - (ytd["gross_wages"] - ytd["retirement_401k"])) < 0.01
+
+
+def test_export_history_csv_content():
+    fresh_store()
+    emp = payroll.add_employee(make_hourly("20"))
+    payroll.record_payslip(generate_payslip(emp, hours_worked=Decimal("40")),
+                           pay_period_index=4)
+    csv_text = payroll.export_history_csv()
+    lines = csv_text.strip().splitlines()
+    assert lines[0].startswith("history_id,employee_id")
+    assert len(lines) == 2
+    row = lines[1].split(",")
+    assert row[2] == "Bob"          # employee_name via join
+    assert float(row[6]) == 800.0   # gross_pay
+
+
+def test_export_history_csv_company_filter():
+    fresh_store()
+    a = make_salaried("52000"); a.company_id = "acme"
+    g = make_salaried("52000"); g.company_id = "globex"
+    ea = payroll.add_employee(a)
+    eg = payroll.add_employee(g)
+    payroll.run_payroll(company_id="acme")
+    payroll.run_payroll(company_id="globex")
+    acme_rows = list(csv.DictReader(io.StringIO(
+        payroll.export_history_csv(company_id="acme"))))
+    assert len(acme_rows) == 1
+    assert acme_rows[0]["employee_id"] == str(ea.id)
+    all_ids = {r["employee_id"] for r in csv.DictReader(io.StringIO(
+        payroll.export_history_csv()))}
+    assert all_ids == {str(ea.id), str(eg.id)}
 
 
 def test_compute_employer_taxes_match_without_surtax():
@@ -764,3 +849,52 @@ def test_api_liabilities_includes_unemployment():
     expected = (report["total_fica_liability"]
                 + report["employer_taxes"]["unemployment_total"])
     assert abs(report["total_employer_liability"] - expected) < 0.05
+
+
+def test_api_401k_creation_update_and_ytd():
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "Saver Sam", "pay_type": "salaried",
+        "annual_salary": 52000, "retirement_401k_percent": 10,
+    }).json()
+    assert e["retirement_401k_percent"] == 10.0
+
+    slip = c.post(f"/payroll/employees/{e['id']}/payslip", json={}).json()
+    assert slip["retirement_401k"] == 200.0
+
+    ytd = c.get(f"/payroll/employees/{e['id']}/ytd").json()
+    assert ytd["pay_periods_paid"] == 1
+    assert ytd["gross_wages"] == 2000.0
+    assert ytd["retirement_401k"] == 200.0
+    assert abs(ytd["taxable_wages_income_tax"] - 1800.0) < 0.01
+
+    # Update the contribution rate via PUT
+    upd = c.put(f"/payroll/employees/{e['id']}",
+                json={"retirement_401k_percent": 5}).json()
+    assert upd["retirement_401k_percent"] == 5.0
+
+
+def test_api_ytd_unknown_employee_returns_404():
+    c = get_client()
+    resp = c.get("/payroll/employees/999999/ytd")
+    assert resp.status_code == 404
+
+
+def test_api_csv_export_endpoint():
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "CSV Celia", "pay_type": "hourly", "hourly_rate": 20,
+    }).json()
+    c.post(f"/payroll/employees/{e['id']}/payslip", json={"hours_worked": 40})
+
+    resp = c.get("/payroll/export.csv")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    lines = resp.text.strip().splitlines()
+    assert lines[0].startswith("history_id,employee_id")
+    assert len(lines) == 2
+    assert "CSV Celia" in lines[1]
+
+    # Empty scope yields header only
+    empty = c.get("/payroll/export.csv", params={"employee_id": 999999})
+    assert len(empty.text.strip().splitlines()) == 1

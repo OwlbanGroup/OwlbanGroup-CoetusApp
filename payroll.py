@@ -6,6 +6,8 @@ gross pay (salaried or hourly with overtime), progressive tax
 withholding, benefit deductions, and net pay.
 """
 
+import csv
+import io
 import os
 import sqlite3
 from dataclasses import dataclass, field
@@ -94,6 +96,7 @@ class Employee:
     filing_status: Optional[str] = "single"   # BRACKET_PRESETS key, or None to use active table
     state: Optional[str] = None               # STATE_TAX_RATES key, or None for no state tax
     company_id: Optional[str] = None          # optional company/grouping tag
+    retirement_401k_percent: Decimal = field(default_factory=lambda: Decimal("0"))
 
     def validate(self):
         if self.pay_type not in VALID_PAY_TYPES:
@@ -104,6 +107,8 @@ class Employee:
             raise ValueError("pay_periods_per_year must be >= 1")
         if self.benefits_deduction_per_period < 0:
             raise ValueError("benefits_deduction_per_period cannot be negative")
+        if not (Decimal("0") <= self.retirement_401k_percent <= Decimal("100")):
+            raise ValueError("retirement_401k_percent must be between 0 and 100")
         if self.filing_status is not None and self.filing_status not in BRACKET_PRESETS:
             raise ValueError(f"filing_status must be one of {sorted(BRACKET_PRESETS)} or null")
         if self.state is not None and self.state not in STATE_TAX_RATES:
@@ -175,7 +180,8 @@ CREATE TABLE IF NOT EXISTS employees (
     pay_periods_per_year INTEGER NOT NULL DEFAULT 26,
     filing_status TEXT DEFAULT 'single',
     state TEXT,
-    company_id TEXT
+    company_id TEXT,
+    retirement_401k_percent TEXT NOT NULL DEFAULT '0'
 )
 """
 
@@ -198,7 +204,8 @@ CREATE TABLE IF NOT EXISTS pay_history (
     employer_medicare TEXT NOT NULL DEFAULT '0',
     employer_futa TEXT NOT NULL DEFAULT '0',
     employer_suta TEXT NOT NULL DEFAULT '0',
-    company_id TEXT
+    company_id TEXT,
+    retirement_401k TEXT NOT NULL DEFAULT '0'
 )
 """
 
@@ -221,6 +228,8 @@ def _connect() -> sqlite3.Connection:
                    "filing_status TEXT DEFAULT 'single'")
     _ensure_column(conn, "employees", "state", "state TEXT")
     _ensure_column(conn, "employees", "company_id", "company_id TEXT")
+    _ensure_column(conn, "employees", "retirement_401k_percent",
+                   "retirement_401k_percent TEXT NOT NULL DEFAULT '0'")
     _ensure_column(conn, "pay_history", "state_tax_withheld",
                    "state_tax_withheld TEXT NOT NULL DEFAULT '0'")
     _ensure_column(conn, "pay_history", "employer_social_security",
@@ -232,6 +241,8 @@ def _connect() -> sqlite3.Connection:
     _ensure_column(conn, "pay_history", "employer_suta",
                    "employer_suta TEXT NOT NULL DEFAULT '0'")
     _ensure_column(conn, "pay_history", "company_id", "company_id TEXT")
+    _ensure_column(conn, "pay_history", "retirement_401k",
+                   "retirement_401k TEXT NOT NULL DEFAULT '0'")
     conn.commit()
     return conn
 
@@ -282,6 +293,11 @@ def _row_to_employee(row: sqlite3.Row) -> Employee:
         filing_status=row["filing_status"] if "filing_status" in row.keys() else "single",
         state=row["state"] if "state" in row.keys() else None,
         company_id=row["company_id"] if "company_id" in row.keys() else None,
+        retirement_401k_percent=(
+            Decimal(row["retirement_401k_percent"])
+            if "retirement_401k_percent" in row.keys() and row["retirement_401k_percent"]
+            else Decimal("0")
+        ),
     )
 
 
@@ -301,8 +317,8 @@ def add_employee(employee: Employee) -> Employee:
         cursor = conn.execute(
             "INSERT INTO employees (name, pay_type, annual_salary, hourly_rate,"
             " benefits_deduction_per_period, pay_periods_per_year, filing_status,"
-            " state, company_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " state, company_id, retirement_401k_percent)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 employee.name.strip(),
                 employee.pay_type,
@@ -313,6 +329,7 @@ def add_employee(employee: Employee) -> Employee:
                 employee.filing_status,
                 employee.state,
                 employee.company_id.strip() if employee.company_id else None,
+                str(employee.retirement_401k_percent),
             ),
         )
         conn.commit()
@@ -360,6 +377,7 @@ def delete_employee(employee_id: int) -> bool:
 UPDATABLE_FIELDS = {
     "name", "annual_salary", "hourly_rate", "benefits_deduction_per_period",
     "pay_periods_per_year", "filing_status", "state", "company_id",
+    "retirement_401k_percent",
 }
 
 
@@ -384,6 +402,8 @@ def update_employee(employee_id: int, updates: dict) -> Optional[Employee]:
             setattr(existing, key, int(value))
         elif key in ("filing_status", "state", "company_id"):
             setattr(existing, key, value)  # validated below
+        elif key == "retirement_401k_percent":
+            setattr(existing, key, Decimal(str(value)))
         else:
             setattr(existing, key,
                     Decimal(str(value)) if value is not None else None)
@@ -394,7 +414,8 @@ def update_employee(employee_id: int, updates: dict) -> Optional[Employee]:
         conn.execute(
             "UPDATE employees SET name = ?, annual_salary = ?, hourly_rate = ?,"
             " benefits_deduction_per_period = ?, pay_periods_per_year = ?,"
-            " filing_status = ?, state = ?, company_id = ? WHERE id = ?",
+            " filing_status = ?, state = ?, company_id = ?,"
+            " retirement_401k_percent = ? WHERE id = ?",
             (
                 existing.name.strip(),
                 str(existing.annual_salary) if existing.annual_salary is not None else None,
@@ -404,6 +425,7 @@ def update_employee(employee_id: int, updates: dict) -> Optional[Employee]:
                 existing.filing_status,
                 existing.state,
                 existing.company_id.strip() if existing.company_id else None,
+                str(existing.retirement_401k_percent),
                 employee_id,
             ),
         )
@@ -560,19 +582,26 @@ def generate_payslip(employee: Employee, hours_worked: Optional[Decimal] = None,
                                 pay_period_index=pay_period_index)
     annual_gross = gross * periods
 
-    annual_tax = calculate_tax(annual_gross, brackets=_resolve_brackets(employee, tax_brackets))
+    # Pre-tax 401(k): reduces income-tax wages (federal + state) but is
+    # still subject to FICA. Deducted from the employee's net pay.
+    retirement = (gross * employee.retirement_401k_percent
+                  / Decimal("100")).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    annual_retirement = retirement * periods
+    taxable_annual = annual_gross - annual_retirement
+
+    annual_tax = calculate_tax(taxable_annual, brackets=_resolve_brackets(employee, tax_brackets))
     tax_withheld = (annual_tax / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     annual_ss, annual_medicare = calculate_fica(annual_gross)
     social_security = (annual_ss / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
     medicare = (annual_medicare / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
-    state_withheld = (calculate_state_tax(annual_gross, employee.state) / periods).quantize(
+    state_withheld = (calculate_state_tax(taxable_annual, employee.state) / periods).quantize(
         TWO_PLACES, rounding=ROUND_HALF_UP)
 
     benefits = employee.benefits_deduction_per_period.quantize(TWO_PLACES)
     total_deductions = (tax_withheld + social_security + medicare
-                        + state_withheld + benefits).quantize(TWO_PLACES)
+                        + state_withheld + retirement + benefits).quantize(TWO_PLACES)
     net = (gross - total_deductions).quantize(TWO_PLACES)
 
     employer_ss_annual, employer_medi_annual = compute_employer_taxes(annual_gross)
@@ -597,6 +626,7 @@ def generate_payslip(employee: Employee, hours_worked: Optional[Decimal] = None,
         "social_security": float(social_security),
         "medicare": float(medicare),
         "state_tax_withheld": float(state_withheld),
+        "retirement_401k": float(retirement),
         "benefits_deduction": float(benefits),
         "total_deductions": float(total_deductions),
         "net_pay": float(net),
@@ -616,8 +646,8 @@ def record_payslip(slip: dict, pay_period_index: int = 0) -> int:
             " gross_pay, federal_tax_withheld, social_security_withheld,"
             " medicare_withheld, benefits_deduction, net_pay, filing_status,"
             " state_tax_withheld, employer_social_security, employer_medicare,"
-            " employer_futa, employer_suta, company_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " employer_futa, employer_suta, company_id, retirement_401k)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 slip["employee_id"],
                 pay_period_index,
@@ -635,6 +665,7 @@ def record_payslip(slip: dict, pay_period_index: int = 0) -> int:
                 str(slip.get("employer_futa", 0)),
                 str(slip.get("employer_suta", 0)),
                 slip.get("company_id"),
+                str(slip.get("retirement_401k", 0)),
             ),
         )
         conn.commit()
@@ -688,6 +719,7 @@ def _history_row_to_dict(r: sqlite3.Row) -> dict:
         "employer_futa": float(r["employer_futa"] or 0),
         "employer_suta": float(r["employer_suta"] or 0),
         "company_id": r["company_id"] if "company_id" in r.keys() else None,
+        "retirement_401k": float(r["retirement_401k"] or 0),
     }
 
 
@@ -776,6 +808,7 @@ def run_payroll(hours_by_employee: Optional[Dict[int, Decimal]] = None,
     total_employer_medicare = Decimal("0")
     total_futa = Decimal("0")
     total_suta = Decimal("0")
+    total_retirement = Decimal("0")
     total_benefits = Decimal("0")
     total_net = Decimal("0")
 
@@ -796,6 +829,7 @@ def run_payroll(hours_by_employee: Optional[Dict[int, Decimal]] = None,
             total_employer_medicare += Decimal(str(slip["employer_medicare"]))
             total_futa += Decimal(str(slip["employer_futa"]))
             total_suta += Decimal(str(slip["employer_suta"]))
+            total_retirement += Decimal(str(slip["retirement_401k"]))
             total_benefits += Decimal(str(slip["benefits_deduction"]))
             total_net += Decimal(str(slip["net_pay"]))
         except ValueError as e:
@@ -821,6 +855,7 @@ def run_payroll(hours_by_employee: Optional[Dict[int, Decimal]] = None,
             "employer_medicare": _f(total_employer_medicare),
             "employer_futa": _f(total_futa),
             "employer_suta": _f(total_suta),
+            "retirement_401k": _f(total_retirement),
             "benefits_deduction": _f(total_benefits),
             "net_pay": _f(total_net),
         },
@@ -828,3 +863,91 @@ def run_payroll(hours_by_employee: Optional[Dict[int, Decimal]] = None,
         "employees_errored": len(errors),
     }
 
+
+
+def get_ytd_summary(employee_id: int) -> dict:
+    """
+    Year-to-date (all-time recorded) totals for one employee, aggregated
+    from their pay history: wages, every withholding, deductions, and the
+    employer-side costs associated with their pay.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS periods,"
+            " COALESCE(SUM(CAST(hours_worked AS REAL)), 0) AS hours,"
+            " COALESCE(SUM(CAST(gross_pay AS REAL)), 0) AS gross,"
+            " COALESCE(SUM(CAST(federal_tax_withheld AS REAL)), 0) AS fed,"
+            " COALESCE(SUM(CAST(state_tax_withheld AS REAL)), 0) AS st,"
+            " COALESCE(SUM(CAST(social_security_withheld AS REAL)), 0) AS ss,"
+            " COALESCE(SUM(CAST(medicare_withheld AS REAL)), 0) AS medi,"
+            " COALESCE(SUM(CAST(retirement_401k AS REAL)), 0) AS ret,"
+            " COALESCE(SUM(CAST(benefits_deduction AS REAL)), 0) AS ben,"
+            " COALESCE(SUM(CAST(net_pay AS REAL)), 0) AS net"
+            " FROM pay_history WHERE employee_id = ?",
+            (employee_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    return {
+        "employee_id": employee_id,
+        "pay_periods_paid": row["periods"],
+        "hours_worked": round(row["hours"], 2),
+        "gross_wages": round(row["gross"], 2),
+        "retirement_401k": round(row["ret"], 2),
+        "taxable_wages_income_tax": round(row["gross"] - row["ret"], 2),
+        "withholdings": {
+            "federal_tax": round(row["fed"], 2),
+            "state_tax": round(row["st"], 2),
+            "social_security": round(row["ss"], 2),
+            "medicare": round(row["medi"], 2),
+        },
+        "benefits_deduction": round(row["ben"], 2),
+        "net_pay": round(row["net"], 2),
+    }
+
+
+_CSV_COLUMNS = [
+    "history_id", "employee_id", "employee_name", "company_id", "pay_period_index",
+    "hours_worked", "gross_pay", "federal_tax_withheld", "state_tax_withheld",
+    "social_security", "medicare", "retirement_401k", "benefits_deduction",
+    "net_pay", "employer_social_security", "employer_medicare",
+    "employer_futa", "employer_suta", "recorded_at",
+]
+
+
+def export_history_csv(company_id: Optional[str] = None,
+                       employee_id: Optional[int] = None) -> str:
+    """
+    Export recorded payslips as CSV text (a payroll journal suitable for
+    accounting imports), optionally scoped to a company and/or employee.
+    """
+    conn = _connect()
+    try:
+        where = []
+        params = []
+        if company_id is not None:
+            where.append("h.company_id = ?")
+            params.append(company_id)
+        if employee_id is not None:
+            where.append("h.employee_id = ?")
+            params.append(employee_id)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(
+            "SELECT h.*, e.name AS employee_name FROM pay_history h"
+            " LEFT JOIN employees e ON e.id = h.employee_id"
+            f" {clause} ORDER BY h.id",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(_CSV_COLUMNS)
+    for r in rows:
+        d = _history_row_to_dict(r)
+        d["employee_name"] = r["employee_name"] if "employee_name" in r.keys() else None
+        writer.writerow([d.get(col, "") for col in _CSV_COLUMNS])
+    return buffer.getvalue()

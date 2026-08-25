@@ -84,17 +84,55 @@ def test_progressive_tax_brackets():
 
 
 def test_payslip_net_pay_math():
-    payroll.set_tax_brackets([(None, Decimal("0.10"))])
-    try:
-        emp = make_salaried("52000", benefits="100")
-        slip = generate_payslip(emp)
-        assert slip["gross_pay"] == 2000.00
-        # annual gross 52000 * 10% = 5200 tax; per period = 200.00
-        assert slip["tax_withheld"] == 200.00
-        assert slip["benefits_deduction"] == 100.00
-        assert slip["net_pay"] == 1700.00
-    finally:
-        payroll.set_tax_brackets(payroll.DEFAULT_TAX_BRACKETS)
+    emp = make_salaried("52000", benefits="100")
+    slip = generate_payslip(emp, tax_brackets=[(None, Decimal("0.10"))])
+    assert slip["gross_pay"] == 2000.00
+    # Federal: annual 52000 * 10% = 5200 -> 200.00 per period
+    assert slip["tax_withheld"] == 200.00
+    # FICA on 52000 annualized: SS 3224.00 -> 124.00; Medicare 754.00 -> 29.00
+    assert slip["social_security"] == 124.00
+    assert slip["medicare"] == 29.00
+    assert slip["benefits_deduction"] == 100.00
+    assert slip["total_deductions"] == 453.00
+    assert slip["net_pay"] == 1547.00
+
+
+def test_fica_amounts_for_hourly():
+    emp = make_hourly("20")
+    slip = generate_payslip(emp, hours_worked=Decimal("40"))
+    # annualized 800 * 26 = 20800: SS 1289.60 -> 49.60; Medicare 301.60 -> 11.60
+    assert slip["social_security"] == 49.60
+    assert slip["medicare"] == 11.60
+
+
+def test_social_security_wage_base_cap():
+    emp = Employee(name="High Earner", pay_type="salaried",
+                   annual_salary=Decimal("400000"), pay_periods_per_year=12)
+    slip = generate_payslip(emp)
+    # SS capped at 168600 * 6.2% = 10453.20 per year -> 871.10 per month
+    assert slip["social_security"] == 871.10
+
+
+def test_calculate_fica_includes_additional_medicare():
+    ss, medicare = payroll.calculate_fica(Decimal("250000"))
+    assert ss == Decimal("168600") * Decimal("0.062")
+    expected = Decimal("250000") * Decimal("0.0145") + \
+        Decimal("50000") * Decimal("0.009")
+    assert medicare == expected
+
+
+def test_employee_filing_status_drives_withholding():
+    single_emp = make_salaried("104000")
+    married_emp = make_salaried("104000")
+    married_emp.filing_status = "married_joint"
+    s = generate_payslip(single_emp)
+    m = generate_payslip(married_emp)
+    assert s["filing_status"] == "single"
+    assert m["filing_status"] == "married_joint"
+    assert m["tax_withheld"] < s["tax_withheld"]
+    # FICA does not depend on filing status
+    assert s["social_security"] == m["social_security"]
+    assert s["medicare"] == m["medicare"]
 
 
 def test_employee_validation_rejects_bad_pay_type():
@@ -182,6 +220,250 @@ def test_run_payroll_mixed_employees_reports_errors_and_totals():
     assert result["totals"]["gross_pay"] == 2800.00
 
 
+def test_invalid_filing_status_rejected():
+    emp = make_salaried()
+    emp.filing_status = "bogus"
+    fresh_store()
+    try:
+        payroll.add_employee(emp)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# State tax & employer tax tests
+# ---------------------------------------------------------------------------
+
+def test_state_tax_flat_rate_withheld():
+    emp = make_salaried("52000")
+    emp.state = "pa"  # 3.07%
+    slip = generate_payslip(emp)
+    # annualized 52000 * 0.0307 = 1596.40 -> 61.40 per period
+    assert slip["state"] == "pa"
+    assert slip["state_tax_withheld"] == 61.40
+
+
+def test_no_state_means_zero_state_tax():
+    emp = make_salaried("52000")  # state defaults to None
+    assert generate_payslip(emp)["state_tax_withheld"] == 0.0
+    emp_none = make_salaried("52000")
+    emp_none.state = "none"
+    assert generate_payslip(emp_none)["state_tax_withheld"] == 0.0
+
+
+def test_invalid_state_rejected():
+    emp = make_salaried()
+    emp.state = "zz"
+    try:
+        emp.validate()
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_compute_employer_taxes_match_without_surtax():
+    ss_match, medicare = payroll.compute_employer_taxes(Decimal("250000"))
+    # Employer SS capped at wage base; no Additional Medicare surtax for employer
+    assert ss_match == Decimal("168600") * Decimal("0.062")
+    assert medicare == Decimal("250000") * Decimal("0.0145")
+
+
+def test_payslip_includes_employer_amounts():
+    emp = make_salaried("52000")
+    slip = generate_payslip(emp)
+    # Employee and employer FICA match on wages below the SS cap
+    assert slip["employer_social_security"] == slip["social_security"]
+    assert slip["employer_medicare"] == slip["medicare"]
+
+
+# ---------------------------------------------------------------------------
+# Progressive state tax tests
+# ---------------------------------------------------------------------------
+
+def test_california_progressive_state_tax():
+    # CA $60,000 annual: 10756*.01 + 14743*.02 + 14746*.04
+    #   + 15621*.06 + (60000-55866)*.08 = 107.56+294.86+589.84+937.26+330.72
+    emp = make_salaried("60000")
+    emp.state = "ca"
+    slip = generate_payslip(emp)
+    annual_ca = Decimal("107.56") + Decimal("294.86") + Decimal("589.84") \
+        + Decimal("937.26") + Decimal("330.72")
+    expected_per_period = (annual_ca / Decimal("26")).quantize(Decimal("0.01"))
+    assert abs(slip["state_tax_withheld"] - float(expected_per_period)) < 0.01
+
+
+def test_new_york_progressive_higher_than_flat_pa_at_same_income():
+    income = Decimal("100000")
+    ny = payroll.calculate_state_tax(income, "ny")
+    pa = payroll.calculate_state_tax(income, "pa")
+    assert ny > pa  # NY's top rates exceed PA's flat 3.07% at high incomes
+
+
+def test_california_progressive_marginal_rates():
+    # Only the first bracket applies below its boundary: 10,000 * 1%
+    assert payroll.calculate_state_tax(Decimal("10000"), "ca") == Decimal("100.00")
+
+
+# ---------------------------------------------------------------------------
+# Unemployment tax tests (FUTA/SUTA, employer-side)
+# ---------------------------------------------------------------------------
+
+def test_futa_capped_at_wage_base():
+    futa_low, _ = payroll.compute_employer_unemployment(Decimal("5000"), None)
+    futa_high, _ = payroll.compute_employer_unemployment(Decimal("100000"), None)
+    assert futa_low == Decimal("5000") * Decimal("0.006")
+    assert futa_high == Decimal("7000") * Decimal("0.006")  # capped
+
+
+def test_suta_uses_state_wage_base_and_configurable_rate():
+    payroll.set_suta_rate(Decimal("0.031"))
+    try:
+        _, suta_co = payroll.compute_employer_unemployment(Decimal("50000"), "co")
+        assert suta_co == Decimal("17000") * Decimal("0.031")
+        # No SUTA without a state
+        _, suta_none = payroll.compute_employer_unemployment(Decimal("50000"), None)
+        assert suta_none == Decimal("0")
+    finally:
+        payroll.set_suta_rate(payroll.DEFAULT_SUTA_RATE)
+
+
+def test_set_suta_rate_rejects_invalid():
+    try:
+        payroll.set_suta_rate(Decimal("5"))
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_payslip_includes_unemployment_amounts():
+    emp = make_salaried("52000")
+    emp.state = "co"
+    slip = generate_payslip(emp)
+    # FUTA on annualized 52000 capped at 7000 * 0.6% = 42.00 -> 1.6154/period
+    assert slip["employer_futa"] > 0
+    assert slip["employer_suta"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Multi-company tests
+# ---------------------------------------------------------------------------
+
+def test_list_employees_filters_by_company():
+    fresh_store()
+    acme = make_salaried("52000"); acme.company_id = "acme"
+    globex = make_salaried("52000"); globex.company_id = "globex"
+    a = payroll.add_employee(acme)
+    g = payroll.add_employee(globex)
+    ids = {e.id for e in payroll.list_employees(company_id="acme")}
+    assert a.id in ids and g.id not in ids
+
+
+def test_run_payroll_respects_company_scope():
+    fresh_store()
+    acme = make_salaried("52000"); acme.company_id = "acme"
+    globex = make_hourly("20"); globex.company_id = "globex"
+    ea = payroll.add_employee(acme)
+    eg = payroll.add_employee(globex)
+
+    result = payroll.run_payroll(
+        hours_by_employee={eg.id: Decimal("40")}, company_id="acme")
+    assert result["employees_paid"] == 1
+    assert result["payslips"][0]["employee_id"] == ea.id
+    assert result["totals"]["gross_pay"] == 2000.00
+
+
+def test_liabilities_report_filtered_by_company():
+    fresh_store()
+    acme = make_salaried("52000"); acme.company_id = "acme"
+    globex = make_salaried("104000"); globex.company_id = "globex"
+    payroll.add_employee(acme)
+    payroll.add_employee(globex)
+    payroll.run_payroll()
+    report_acme = payroll.get_liabilities_report(company_id="acme")
+    assert report_acme["payslips_recorded"] == 1
+    assert report_acme["company_id"] == "acme"
+    full = payroll.get_liabilities_report()
+    assert full["payslips_recorded"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Employee update tests
+# ---------------------------------------------------------------------------
+
+def test_update_employee_partial():
+    fresh_store()
+    emp = payroll.add_employee(make_hourly("25"))
+    emp.state = "co"
+    payroll.update_employee(emp.id, {"state": "co"})  # persist the state first
+    updated = payroll.update_employee(emp.id, {"hourly_rate": "30", "name": "Renamed Bob"})
+    fetched = payroll.get_employee(emp.id)
+    assert fetched.hourly_rate == Decimal("30")
+    assert fetched.name == "Renamed Bob"
+    # untouched fields survive
+    assert fetched.pay_type == "hourly"
+
+
+def test_update_preserves_state_when_not_provided():
+    fresh_store()
+    emp = payroll.add_employee(make_salaried("52000"))
+    payroll.update_employee(emp.id, {"state": "il"})
+    # Update something else without mentioning state -> it must be preserved
+    payroll.update_employee(emp.id, {"annual_salary": "60000"})
+    assert payroll.get_employee(emp.id).state == "il"
+
+
+def test_update_employee_rejects_unknown_field():
+    fresh_store()
+    emp = payroll.add_employee(make_hourly("25"))
+    try:
+        payroll.update_employee(emp.id, {"pay_type": "salaried"})
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_update_unknown_employee_returns_none():
+    fresh_store()
+    assert payroll.update_employee(999999, {"name": "Ghost"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Pay history tests
+# ---------------------------------------------------------------------------
+
+def test_payslip_history_roundtrip():
+    fresh_store()
+    emp = payroll.add_employee(make_hourly("20"))
+    slip = generate_payslip(emp, hours_worked=Decimal("40"))
+    hid = payroll.record_payslip(slip, pay_period_index=3)
+    hist = payroll.get_pay_history(emp.id)
+    assert len(hist) == 1
+    row = hist[0]
+    assert row["id"] == hid
+    assert row["employee_id"] == emp.id
+    assert row["pay_period_index"] == 3
+    assert row["gross_pay"] == 800.00
+    assert row["net_pay"] == slip["net_pay"]
+    assert row["recorded_at"]  # timestamp populated
+
+
+def test_run_payroll_records_history():
+    fresh_store()
+    e = payroll.add_employee(make_salaried("52000"))
+    result = payroll.run_payroll(pay_period_index=1)
+    assert result["payslips"][0]["history_id"] > 0
+    assert len(payroll.get_pay_history(e.id)) == 1
+
+
+def test_reset_store_clears_pay_history():
+    fresh_store()
+    emp = payroll.add_employee(make_hourly("20"))
+    payroll.record_payslip(generate_payslip(emp, hours_worked=Decimal("40")))
+    payroll.reset_store()
+    assert payroll.get_pay_history(emp.id) == []
+
+
 # ---------------------------------------------------------------------------
 # Store tests
 # ---------------------------------------------------------------------------
@@ -261,7 +543,9 @@ def test_api_payslip_endpoint():
     assert resp.status_code == 200
     slip = resp.json()
     assert slip["gross_pay"] == 2000.00
-    assert abs(slip["net_pay"] + slip["tax_withheld"] - 2000.00) < 0.01
+    withheld = slip["tax_withheld"] + slip["social_security"] + slip["medicare"]
+    assert abs(slip["net_pay"] + withheld - 2000.00) < 0.01
+    assert "history_id" in slip
 
 
 def test_api_payslip_unknown_employee_returns_404():
@@ -321,3 +605,162 @@ def test_api_run_payroll_unknown_hours_employee_returns_404():
     c = get_client()
     resp = c.post("/payroll/run", json={"hours": {"999999": 10}})
     assert resp.status_code == 404
+
+
+def test_api_create_employee_with_filing_status():
+    c = get_client()
+    resp = c.post("/payroll/employees", json={
+        "name": "Married Mary", "pay_type": "salaried",
+        "annual_salary": 104000, "filing_status": "married_joint",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["filing_status"] == "married_joint"
+    # Persisted round-trip through SQLite
+    assert c.get(f"/payroll/employees/{body['id']}").json()["filing_status"] == "married_joint"
+
+
+def test_api_create_employee_invalid_filing_status_returns_400():
+    c = get_client()
+    resp = c.post("/payroll/employees", json={
+        "name": "Bad Status", "pay_type": "salaried",
+        "annual_salary": 1000, "filing_status": "nope",
+    })
+    assert resp.status_code == 400
+
+
+def test_api_payslip_history_endpoint():
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "History Hank", "pay_type": "salaried", "annual_salary": 52000,
+    }).json()
+    eid = e["id"]
+    c.post(f"/payroll/employees/{eid}/payslip", json={"pay_period_index": 5})
+    c.post(f"/payroll/employees/{eid}/payslip", json={"pay_period_index": 6})
+
+    hist = c.get(f"/payroll/employees/{eid}/payslips").json()
+    assert len(hist) == 2
+    assert [row["pay_period_index"] for row in hist] == [6, 5]  # newest first
+    for row in hist:
+        assert row["gross_pay"] == 2000.00
+        assert row["social_security"] > 0 and row["medicare"] > 0
+
+    assert c.get("/payroll/employees/999999/payslips").status_code == 404
+
+
+def test_api_update_employee():
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "Updatable Uma", "pay_type": "hourly", "hourly_rate": 25.0,
+    }).json()
+
+    resp = c.put(f"/payroll/employees/{e['id']}", json={
+        "hourly_rate": 30, "state": "co",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["hourly_rate"] == 30.0
+    assert body["state"] == "co"
+    assert body["name"] == "Updatable Uma"  # untouched
+
+    # New rate takes effect on the next payslip
+    slip = c.post(f"/payroll/employees/{e['id']}/payslip", json={"hours_worked": 40}).json()
+    assert slip["gross_pay"] == 1200.00
+
+
+def test_api_update_unknown_employee_returns_404():
+    c = get_client()
+    resp = c.put("/payroll/employees/999999", json={"name": "Ghost"})
+    assert resp.status_code == 404
+
+
+def test_api_update_invalid_field_returns_400():
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "X", "pay_type": "hourly", "hourly_rate": 10,
+    }).json()
+    resp = c.put(f"/payroll/employees/{e['id']}", json={"pay_type": "salaried"})
+    # pay_type is immutable; forbidden by the model -> 422 validation error
+    assert resp.status_code in (400, 422)
+
+
+def test_api_liabilities_endpoint():
+    c = get_client()
+    c.post("/payroll/employees", json={
+        "name": "Liable Larry", "pay_type": "salaried", "annual_salary": 52000,
+    })
+    run = c.post("/payroll/run", json={}).json()
+    report = c.get("/payroll/liabilities").json()
+
+    assert report["payslips_recorded"] >= 1
+    assert report["employer_taxes"]["social_security_match"] > 0
+    # Employer SS matches employee SS below the wage base
+    assert abs(report["employer_taxes"]["social_security_match"]
+               - report["employee_withholdings"]["social_security"]) < 0.05
+    expected_total = (report["employee_withholdings"]["social_security"]
+                      + report["employer_taxes"]["social_security_match"]
+                      + report["employee_withholdings"]["medicare"]
+                      + report["employer_taxes"]["medicare"])
+    assert abs(report["total_fica_liability"] - expected_total) < 0.05
+    assert abs(report["gross_wages"] - run["totals"]["gross_pay"]) < 0.05
+
+
+def test_api_payslip_pdf_download():
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "PDF Paula", "pay_type": "salaried", "annual_salary": 52000,
+    }).json()
+    eid = e["id"]
+    slip = c.post(f"/payroll/employees/{eid}/payslip", json={"pay_period_index": 7}).json()
+
+    resp = c.get(f"/payroll/employees/{eid}/payslips/{slip['history_id']}/pdf")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content.startswith(b"%PDF")
+    assert f"payslip_{eid}_{slip['history_id']}.pdf" in resp.headers["content-disposition"]
+
+    # Mismatched employee/payslip pair -> 404
+    other = c.post("/payroll/employees", json={
+        "name": "Other Otto", "pay_type": "hourly", "hourly_rate": 5,
+    }).json()
+    mismatch = c.get(f"/payroll/employees/{other['id']}/payslips/{slip['history_id']}/pdf")
+    assert mismatch.status_code == 404
+
+
+def test_api_company_scoped_endpoints():
+    c = get_client()
+    acme_emp = c.post("/payroll/employees", json={
+        "name": "Acme Annie", "pay_type": "salaried",
+        "annual_salary": 52000, "company_id": "acme",
+    }).json()
+    c.post("/payroll/employees", json={
+        "name": "Globex Gary", "pay_type": "salaried",
+        "annual_salary": 52000, "company_id": "globex",
+    }).json()
+
+    listing = c.get("/payroll/employees", params={"company_id": "acme"}).json()
+    assert len(listing) == 1
+    assert listing[0]["id"] == acme_emp["id"]
+    assert listing[0]["company_id"] == "acme"
+
+    run = c.post("/payroll/run", json={"hours": {}, "company_id": "acme"}).json()
+    assert run["employees_paid"] == 1
+
+    report = c.get("/payroll/liabilities", params={"company_id": "acme"}).json()
+    assert report["company_id"] == "acme"
+    assert report["employer_taxes"]["suta"] >= 0  # no state -> suta 0, still reported
+
+
+def test_api_liabilities_includes_unemployment():
+    c = get_client()
+    c.post("/payroll/employees", json={
+        "name": "CO Carla", "pay_type": "salaried",
+        "annual_salary": 52000, "state": "co",
+    })
+    c.post("/payroll/run", json={})
+    report = c.get("/payroll/liabilities").json()
+    assert report["employer_taxes"]["futa"] > 0
+    assert report["employer_taxes"]["suta"] > 0
+    expected = (report["total_fica_liability"]
+                + report["employer_taxes"]["unemployment_total"])
+    assert abs(report["total_employer_liability"] - expected) < 0.05

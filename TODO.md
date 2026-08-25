@@ -29,3 +29,6 @@
 - [x] Progressive state income tax tables (CA, NY) alongside flat-rate presets
 - [x] Employer unemployment taxes: FUTA (0.6% on first $7k) + SUTA (configurable rate, per-state wage bases)
 - [x] Multi-company support via company_id with filtering for list/run/liabilities
+- [x] Pre-tax 401(k) deductions (reduces income-tax wages, not FICA)
+- [x] Per-employee YTD summaries (GET /payroll/employees/{id}/ytd)
+- [x] CSV payroll journal export (GET /payroll/export.csv)

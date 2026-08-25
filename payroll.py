@@ -12,7 +12,7 @@ import os
 import sqlite3
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 TWO_PLACES = Decimal("0.01")
@@ -30,7 +30,7 @@ ADDITIONAL_MEDICARE_THRESHOLD = Decimal("200000")
 # A state's value is either a flat Decimal rate or a progressive bracket
 # list [(upper_bound_or_None, marginal_rate)] like the federal tables.
 # Employees with state=None pay no state tax through this module.
-STATE_TAX_RATES = {
+STATE_TAX_RATES: Dict[str, Union[Decimal, List[tuple]]] = {
     "none": Decimal("0"),
     "az": Decimal("0.025"),    # Arizona (flat)
     "co": Decimal("0.044"),    # Colorado (flat)
@@ -333,6 +333,8 @@ def add_employee(employee: Employee) -> Employee:
             ),
         )
         conn.commit()
+        if cursor.lastrowid is None:  # sqlite always sets it after INSERT
+            raise RuntimeError("INSERT did not return a row id")
         employee.id = cursor.lastrowid
         return employee
     finally:
@@ -463,14 +465,18 @@ def calculate_gross_pay(employee: Employee, hours_worked: Optional[Decimal] = No
       OVERTIME_THRESHOLD_HOURS paid at OVERTIME_MULTIPLIER
     """
     if employee.pay_type == "salaried":
+        if employee.annual_salary is None:
+            raise ValueError("salaried employees require an annual_salary")
         gross = employee.annual_salary / Decimal(employee.pay_periods_per_year)
     else:
         if hours_worked is None or hours_worked < 0:
             raise ValueError("hours_worked is required and must be >= 0 for hourly employees")
+        if employee.hourly_rate is None:
+            raise ValueError("hourly employees require an hourly_rate")
+        rate = employee.hourly_rate
         regular = min(hours_worked, OVERTIME_THRESHOLD_HOURS)
         overtime = max(hours_worked - OVERTIME_THRESHOLD_HOURS, Decimal("0"))
-        gross = (employee.hourly_rate * regular) + \
-                (employee.hourly_rate * OVERTIME_MULTIPLIER * overtime)
+        gross = (rate * regular) + (rate * OVERTIME_MULTIPLIER * overtime)
     return gross.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
@@ -669,6 +675,8 @@ def record_payslip(slip: dict, pay_period_index: int = 0) -> int:
             ),
         )
         conn.commit()
+        if cursor.lastrowid is None:  # sqlite always sets it after INSERT
+            raise RuntimeError("INSERT did not return a row id")
         return cursor.lastrowid
     finally:
         conn.close()
@@ -926,7 +934,7 @@ def export_history_csv(company_id: Optional[str] = None,
     conn = _connect()
     try:
         where = []
-        params = []
+        params: List[Any] = []
         if company_id is not None:
             where.append("h.company_id = ?")
             params.append(company_id)

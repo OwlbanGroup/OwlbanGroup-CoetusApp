@@ -21,11 +21,13 @@ This project implements an end-to-end AI system optimized for NVIDIA Blackwell G
 ### Option 1: Docker Deployment (Recommended)
 
 1. Build the Docker image:
+
    ```bash
    docker build -t blackwell-ai-system .
    ```
 
 2. Run the container with GPU support:
+
    ```bash
    docker run --gpus all -p 8000:8000 blackwell-ai-system
    ```
@@ -33,11 +35,13 @@ This project implements an end-to-end AI system optimized for NVIDIA Blackwell G
 ### Option 2: Local Installation
 
 1. Install dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 2. Ensure CUDA is available:
+
    ```bash
    python -c "import torch; print(torch.cuda.is_available())"
    ```
@@ -47,6 +51,7 @@ This project implements an end-to-end AI system optimized for NVIDIA Blackwell G
 ### API Usage
 
 Start the API server:
+
 ```bash
 python app.py
 ```
@@ -62,6 +67,7 @@ curl -X POST "http://localhost:8000/classify" -H "accept: application/json" -H "
 ```
 
 Response:
+
 ```json
 {
   "predicted_class": "golden retriever"
@@ -92,7 +98,7 @@ python main.py path/to/image.jpg
 The service includes payroll management endpoints:
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| -------- | ---------- | ------------- |
 | POST | `/payroll/employees` | Register an employee (`name`, `pay_type` of `salaried`/`hourly`, `annual_salary` or `hourly_rate`, optional `filing_status`) |
 | GET | `/payroll/employees` | List all employees |
 | GET | `/payroll/employees/{id}` | Fetch one employee |

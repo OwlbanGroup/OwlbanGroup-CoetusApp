@@ -10,6 +10,8 @@ import os
 import tempfile
 
 from decimal import Decimal
+from functools import lru_cache
+
 from fastapi.testclient import TestClient
 
 import payroll
@@ -26,6 +28,7 @@ def fresh_store():
 # ---------------------------------------------------------------------------
 
 def make_salaried(annual="52000", benefits="0"):
+    """Build a salaried Employee with sensible defaults."""
     return Employee(
         name="Alice",
         pay_type="salaried",
@@ -36,6 +39,7 @@ def make_salaried(annual="52000", benefits="0"):
 
 
 def make_hourly(rate="20", benefits="0"):
+    """Build an hourly Employee with sensible defaults."""
     return Employee(
         name="Bob",
         pay_type="hourly",
@@ -45,23 +49,27 @@ def make_hourly(rate="20", benefits="0"):
 
 
 def test_salaried_gross_pay():
+    """Annual salary divided by periods gives gross pay."""
     emp = make_salaried("52000")
     # 52000 / 26 = 2000.00 per period
     assert calculate_gross_pay(emp) == Decimal("2000.00")
 
 
 def test_hourly_regular_hours():
+    """Regular hours are paid at straight time."""
     emp = make_hourly("20")
     assert calculate_gross_pay(emp, hours_worked=Decimal("40")) == Decimal("800.00")
 
 
 def test_hourly_overtime_paid_at_time_and_a_half():
+    """Hours beyond 40 are paid at 1.5x."""
     emp = make_hourly("20")
     # 40 regular * 20 + 10 overtime * 30 = 1100.00
     assert calculate_gross_pay(emp, hours_worked=Decimal("50")) == Decimal("1100.00")
 
 
 def test_hourly_requires_hours():
+    """Hourly employees without hours raise ValueError."""
     try:
         calculate_gross_pay(make_hourly())
         assert False, "expected ValueError"
@@ -70,6 +78,7 @@ def test_hourly_requires_hours():
 
 
 def test_progressive_tax_brackets():
+    """Tax is computed marginally across brackets."""
     brackets = [
         (Decimal("10000"), Decimal("0.10")),
         (Decimal("20000"), Decimal("0.20")),
@@ -86,6 +95,7 @@ def test_progressive_tax_brackets():
 
 
 def test_payslip_net_pay_math():
+    """Full payslip math from gross down to net pay."""
     emp = make_salaried("52000", benefits="100")
     slip = generate_payslip(emp, tax_brackets=[(None, Decimal("0.10"))])
     assert slip["gross_pay"] == 2000.00
@@ -100,6 +110,7 @@ def test_payslip_net_pay_math():
 
 
 def test_fica_amounts_for_hourly():
+    """FICA is based on annualized hourly gross."""
     emp = make_hourly("20")
     slip = generate_payslip(emp, hours_worked=Decimal("40"))
     # annualized 800 * 26 = 20800: SS 1289.60 -> 49.60; Medicare 301.60 -> 11.60
@@ -108,6 +119,7 @@ def test_fica_amounts_for_hourly():
 
 
 def test_social_security_wage_base_cap():
+    """Social Security stops at the annual wage base."""
     emp = Employee(name="High Earner", pay_type="salaried",
                    annual_salary=Decimal("400000"), pay_periods_per_year=12)
     slip = generate_payslip(emp)
@@ -116,6 +128,7 @@ def test_social_security_wage_base_cap():
 
 
 def test_calculate_fica_includes_additional_medicare():
+    """High earners owe the Additional Medicare surtax."""
     ss, medicare = payroll.calculate_fica(Decimal("250000"))
     assert ss == Decimal("168600") * Decimal("0.062")
     expected = Decimal("250000") * Decimal("0.0145") + \
@@ -124,6 +137,7 @@ def test_calculate_fica_includes_additional_medicare():
 
 
 def test_employee_filing_status_drives_withholding():
+    """Filing status changes federal withholding, not FICA."""
     single_emp = make_salaried("104000")
     married_emp = make_salaried("104000")
     married_emp.filing_status = "married_joint"
@@ -138,6 +152,7 @@ def test_employee_filing_status_drives_withholding():
 
 
 def test_employee_validation_rejects_bad_pay_type():
+    """Unsupported pay types fail validation."""
     emp = Employee(name="X", pay_type="commission")
     try:
         emp.validate()
@@ -147,6 +162,7 @@ def test_employee_validation_rejects_bad_pay_type():
 
 
 def test_employee_validation_requires_salary_for_salaried():
+    """Salaried employees require an annual salary."""
     emp = Employee(name="X", pay_type="salaried")
     try:
         emp.validate()
@@ -160,6 +176,7 @@ def test_employee_validation_requires_salary_for_salaried():
 # ---------------------------------------------------------------------------
 
 def test_bracket_presets_married_lower_than_single():
+    """Married-joint preset taxes less than single."""
     income = Decimal("100000")
     payroll.set_tax_brackets(payroll.BRACKET_PRESETS["single"])
     try:
@@ -172,6 +189,7 @@ def test_bracket_presets_married_lower_than_single():
 
 
 def test_calculate_tax_single_bracket_expected_amount():
+    """Single-filer preset yields the exact expected tax."""
     # Single filer, $60,000 annual:
     # 11600*.10 + 35550*.12 + (60000-47150)*.22
     # = 1160 + 4266 + 2827 = 8253
@@ -183,6 +201,7 @@ def test_calculate_tax_single_bracket_expected_amount():
 
 
 def test_calculate_tax_explicit_brackets_override_active():
+    """Explicit brackets win over the active preset."""
     payroll.set_tax_brackets(payroll.BRACKET_PRESETS["single"])
     custom = [(None, Decimal("0.05"))]
     # Explicit table wins over the active single-filer table.
@@ -190,6 +209,7 @@ def test_calculate_tax_explicit_brackets_override_active():
 
 
 def test_set_tax_brackets_by_status_invalid_raises():
+    """Unknown filing status raises ValueError."""
     try:
         payroll.set_tax_brackets_by_status("nonexistent")
         assert False, "expected ValueError"
@@ -202,6 +222,7 @@ def test_set_tax_brackets_by_status_invalid_raises():
 # ---------------------------------------------------------------------------
 
 def test_run_payroll_mixed_employees_reports_errors_and_totals():
+    """Batch runs pay valid employees and report errors."""
     fresh_store()
     salaried = payroll.add_employee(make_salaried("52000"))
     hourly = payroll.add_employee(make_hourly("20"))
@@ -223,6 +244,7 @@ def test_run_payroll_mixed_employees_reports_errors_and_totals():
 
 
 def test_invalid_filing_status_rejected():
+    """Bad filing status blocks persistence."""
     emp = make_salaried()
     emp.filing_status = "bogus"
     fresh_store()
@@ -238,6 +260,7 @@ def test_invalid_filing_status_rejected():
 # ---------------------------------------------------------------------------
 
 def test_state_tax_flat_rate_withheld():
+    """Flat-rate states withhold a fixed percentage."""
     emp = make_salaried("52000")
     emp.state = "pa"  # 3.07%
     slip = generate_payslip(emp)
@@ -247,6 +270,7 @@ def test_state_tax_flat_rate_withheld():
 
 
 def test_no_state_means_zero_state_tax():
+    """No state means zero state tax."""
     emp = make_salaried("52000")  # state defaults to None
     assert generate_payslip(emp)["state_tax_withheld"] == 0.0
     emp_none = make_salaried("52000")
@@ -255,6 +279,7 @@ def test_no_state_means_zero_state_tax():
 
 
 def test_invalid_state_rejected():
+    """Unknown state codes fail validation."""
     emp = make_salaried()
     emp.state = "zz"
     try:
@@ -269,6 +294,7 @@ def test_invalid_state_rejected():
 # ---------------------------------------------------------------------------
 
 def test_401k_reduces_income_tax_but_not_fica():
+    """401(k) lowers income-tax wages but not FICA wages."""
     payroll.set_tax_brackets(payroll.BRACKET_PRESETS["single"])
     try:
         emp = make_salaried("52000")
@@ -286,6 +312,7 @@ def test_401k_reduces_income_tax_but_not_fica():
 
 
 def test_401k_percent_validation_bounds():
+    """401(k) percent must be between 0 and 100."""
     emp = make_salaried()
     emp.retirement_401k_percent = Decimal("101")
     try:
@@ -302,6 +329,7 @@ def test_401k_percent_validation_bounds():
 
 
 def test_ytd_summary_aggregates_history():
+    """YTD summary aggregates recorded payslips."""
     fresh_store()
     emp = payroll.add_employee(make_hourly("20"))
     for hours in ("40", "45"):
@@ -317,6 +345,7 @@ def test_ytd_summary_aggregates_history():
 
 
 def test_export_history_csv_content():
+    """CSV export emits header plus joined data rows."""
     fresh_store()
     emp = payroll.add_employee(make_hourly("20"))
     payroll.record_payslip(generate_payslip(emp, hours_worked=Decimal("40")),
@@ -331,9 +360,12 @@ def test_export_history_csv_content():
 
 
 def test_export_history_csv_company_filter():
+    """CSV export can filter by company."""
     fresh_store()
-    a = make_salaried("52000"); a.company_id = "acme"
-    g = make_salaried("52000"); g.company_id = "globex"
+    a = make_salaried("52000")
+    a.company_id = "acme"
+    g = make_salaried("52000")
+    g.company_id = "globex"
     ea = payroll.add_employee(a)
     eg = payroll.add_employee(g)
     payroll.run_payroll(company_id="acme")
@@ -348,6 +380,7 @@ def test_export_history_csv_company_filter():
 
 
 def test_compute_employer_taxes_match_without_surtax():
+    """Employer FICA mirrors employee rates sans surtax."""
     ss_match, medicare = payroll.compute_employer_taxes(Decimal("250000"))
     # Employer SS capped at wage base; no Additional Medicare surtax for employer
     assert ss_match == Decimal("168600") * Decimal("0.062")
@@ -355,6 +388,7 @@ def test_compute_employer_taxes_match_without_surtax():
 
 
 def test_payslip_includes_employer_amounts():
+    """Payslips include employer-side FICA amounts."""
     emp = make_salaried("52000")
     slip = generate_payslip(emp)
     # Employee and employer FICA match on wages below the SS cap
@@ -367,6 +401,7 @@ def test_payslip_includes_employer_amounts():
 # ---------------------------------------------------------------------------
 
 def test_california_progressive_state_tax():
+    """CA applies progressive marginal rates."""
     # CA $60,000 annual: 10756*.01 + 14743*.02 + 14746*.04
     #   + 15621*.06 + (60000-55866)*.08 = 107.56+294.86+589.84+937.26+330.72
     emp = make_salaried("60000")
@@ -379,6 +414,7 @@ def test_california_progressive_state_tax():
 
 
 def test_new_york_progressive_higher_than_flat_pa_at_same_income():
+    """NY progressive beats PA flat at high incomes."""
     income = Decimal("100000")
     ny = payroll.calculate_state_tax(income, "ny")
     pa = payroll.calculate_state_tax(income, "pa")
@@ -386,6 +422,7 @@ def test_new_york_progressive_higher_than_flat_pa_at_same_income():
 
 
 def test_california_progressive_marginal_rates():
+    """Only the first CA bracket applies below its boundary."""
     # Only the first bracket applies below its boundary: 10,000 * 1%
     assert payroll.calculate_state_tax(Decimal("10000"), "ca") == Decimal("100.00")
 
@@ -395,6 +432,7 @@ def test_california_progressive_marginal_rates():
 # ---------------------------------------------------------------------------
 
 def test_futa_capped_at_wage_base():
+    """FUTA is capped at the federal wage base."""
     futa_low, _ = payroll.compute_employer_unemployment(Decimal("5000"), None)
     futa_high, _ = payroll.compute_employer_unemployment(Decimal("100000"), None)
     assert futa_low == Decimal("5000") * Decimal("0.006")
@@ -402,6 +440,7 @@ def test_futa_capped_at_wage_base():
 
 
 def test_suta_uses_state_wage_base_and_configurable_rate():
+    """SUTA honors state wage base and configured rate."""
     payroll.set_suta_rate(Decimal("0.031"))
     try:
         _, suta_co = payroll.compute_employer_unemployment(Decimal("50000"), "co")
@@ -414,6 +453,7 @@ def test_suta_uses_state_wage_base_and_configurable_rate():
 
 
 def test_set_suta_rate_rejects_invalid():
+    """Invalid SUTA rates raise ValueError."""
     try:
         payroll.set_suta_rate(Decimal("5"))
         assert False, "expected ValueError"
@@ -422,6 +462,7 @@ def test_set_suta_rate_rejects_invalid():
 
 
 def test_payslip_includes_unemployment_amounts():
+    """Payslips include employer FUTA/SUTA."""
     emp = make_salaried("52000")
     emp.state = "co"
     slip = generate_payslip(emp)
@@ -435,19 +476,26 @@ def test_payslip_includes_unemployment_amounts():
 # ---------------------------------------------------------------------------
 
 def test_list_employees_filters_by_company():
+    """Listing filters employees by company."""
     fresh_store()
-    acme = make_salaried("52000"); acme.company_id = "acme"
-    globex = make_salaried("52000"); globex.company_id = "globex"
+    acme = make_salaried("52000")
+    acme.company_id = "acme"
+    globex = make_salaried("52000")
+    globex.company_id = "globex"
     a = payroll.add_employee(acme)
     g = payroll.add_employee(globex)
     ids = {e.id for e in payroll.list_employees(company_id="acme")}
-    assert a.id in ids and g.id not in ids
+    assert a.id in ids
+    assert g.id not in ids
 
 
 def test_run_payroll_respects_company_scope():
+    """Runs only pay employees in scope."""
     fresh_store()
-    acme = make_salaried("52000"); acme.company_id = "acme"
-    globex = make_hourly("20"); globex.company_id = "globex"
+    acme = make_salaried("52000")
+    acme.company_id = "acme"
+    globex = make_hourly("20")
+    globex.company_id = "globex"
     ea = payroll.add_employee(acme)
     eg = payroll.add_employee(globex)
 
@@ -459,9 +507,12 @@ def test_run_payroll_respects_company_scope():
 
 
 def test_liabilities_report_filtered_by_company():
+    """Liability reports can be company-scoped."""
     fresh_store()
-    acme = make_salaried("52000"); acme.company_id = "acme"
-    globex = make_salaried("104000"); globex.company_id = "globex"
+    acme = make_salaried("52000")
+    acme.company_id = "acme"
+    globex = make_salaried("104000")
+    globex.company_id = "globex"
     payroll.add_employee(acme)
     payroll.add_employee(globex)
     payroll.run_payroll()
@@ -477,12 +528,15 @@ def test_liabilities_report_filtered_by_company():
 # ---------------------------------------------------------------------------
 
 def test_update_employee_partial():
+    """Partial updates change only the supplied fields."""
     fresh_store()
     emp = payroll.add_employee(make_hourly("25"))
     emp.state = "co"
     payroll.update_employee(emp.id, {"state": "co"})  # persist the state first
-    updated = payroll.update_employee(emp.id, {"hourly_rate": "30", "name": "Renamed Bob"})
+    payroll.update_employee(
+        emp.id, {"hourly_rate": "30", "name": "Renamed Bob"})
     fetched = payroll.get_employee(emp.id)
+    assert fetched is not None
     assert fetched.hourly_rate == Decimal("30")
     assert fetched.name == "Renamed Bob"
     # untouched fields survive
@@ -490,15 +544,19 @@ def test_update_employee_partial():
 
 
 def test_update_preserves_state_when_not_provided():
+    """Omitted fields keep their stored values."""
     fresh_store()
     emp = payroll.add_employee(make_salaried("52000"))
     payroll.update_employee(emp.id, {"state": "il"})
     # Update something else without mentioning state -> it must be preserved
     payroll.update_employee(emp.id, {"annual_salary": "60000"})
-    assert payroll.get_employee(emp.id).state == "il"
+    fetched = payroll.get_employee(emp.id)
+    assert fetched is not None
+    assert fetched.state == "il"
 
 
 def test_update_employee_rejects_unknown_field():
+    """Unknown update fields raise ValueError."""
     fresh_store()
     emp = payroll.add_employee(make_hourly("25"))
     try:
@@ -509,6 +567,7 @@ def test_update_employee_rejects_unknown_field():
 
 
 def test_update_unknown_employee_returns_none():
+    """Updating a ghost employee returns None."""
     fresh_store()
     assert payroll.update_employee(999999, {"name": "Ghost"}) is None
 
@@ -518,6 +577,7 @@ def test_update_unknown_employee_returns_none():
 # ---------------------------------------------------------------------------
 
 def test_payslip_history_roundtrip():
+    """Payslips round-trip through history intact."""
     fresh_store()
     emp = payroll.add_employee(make_hourly("20"))
     slip = generate_payslip(emp, hours_worked=Decimal("40"))
@@ -534,6 +594,7 @@ def test_payslip_history_roundtrip():
 
 
 def test_run_payroll_records_history():
+    """Runs record one history row per employee."""
     fresh_store()
     e = payroll.add_employee(make_salaried("52000"))
     result = payroll.run_payroll(pay_period_index=1)
@@ -542,6 +603,7 @@ def test_run_payroll_records_history():
 
 
 def test_reset_store_clears_pay_history():
+    """Reset wipes all pay history."""
     fresh_store()
     emp = payroll.add_employee(make_hourly("20"))
     payroll.record_payslip(generate_payslip(emp, hours_worked=Decimal("40")))
@@ -553,30 +615,36 @@ def test_reset_store_clears_pay_history():
 # Store tests
 # ---------------------------------------------------------------------------
 
-def setup_function(function):
+def setup_function(_function):
+    """Give every test a brand-new temporary database."""
     fresh_store()
 
 
 def test_add_get_delete_employee():
+    """Employees can be added, fetched, and deleted."""
     added = payroll.add_employee(make_salaried())
     assert added.id > 0
     fetched = payroll.get_employee(added.id)
-    assert fetched is not None and fetched.name == "Alice"
+    assert fetched is not None
+    assert fetched.name == "Alice"
     assert payroll.delete_employee(added.id) is True
     assert payroll.get_employee(added.id) is None
     assert payroll.delete_employee(added.id) is False
 
 
 def test_decimal_precision_survives_roundtrip():
+    """Decimal precision survives SQLite round-trip."""
     emp = make_salaried("52000.55", benefits="123.45")
     stored = payroll.add_employee(emp)
     fetched = payroll.get_employee(stored.id)
+    assert fetched is not None
     assert fetched.annual_salary == Decimal("52000.55")
     assert fetched.benefits_deduction_per_period == Decimal("123.45")
     assert fetched.pay_periods_per_year == 26
 
 
 def test_persistence_across_store_recreation(tmp_path):
+    """Data survives reopening the same database."""
     db_file = os.path.join(str(tmp_path), "persist.db")
     payroll.configure_store(db_file)
     stored = payroll.add_employee(make_hourly("25.50"))
@@ -593,18 +661,15 @@ def test_persistence_across_store_recreation(tmp_path):
 # API endpoint tests
 # ---------------------------------------------------------------------------
 
-client = None
-
-
+@lru_cache(maxsize=1)
 def get_client():
-    global client
-    if client is None:
-        from app import app
-        client = TestClient(app)
-    return client
+    """Return a cached TestClient bound to the FastAPI app."""
+    from app import app  # pylint: disable=import-outside-toplevel
+    return TestClient(app)
 
 
 def test_api_create_and_list_employees():
+    """POST then GET lists the created employee."""
     c = get_client()
     resp = c.post("/payroll/employees", json={
         "name": "Carol", "pay_type": "hourly", "hourly_rate": 25.0,
@@ -618,13 +683,15 @@ def test_api_create_and_list_employees():
 
 
 def test_api_payslip_endpoint():
+    """The payslip endpoint returns correct math."""
     c = get_client()
     created = c.post("/payroll/employees", json={
         "name": "Dave", "pay_type": "salaried",
         "annual_salary": 104000, "pay_periods_per_year": 52,
     }).json()
 
-    resp = c.post(f"/payroll/employees/{created['id']}/payslip", json={"hours_worked": None})
+    resp = c.post(f"/payroll/employees/{created['id']}/payslip",
+                  json={"hours_worked": None})
     assert resp.status_code == 200
     slip = resp.json()
     assert slip["gross_pay"] == 2000.00
@@ -634,18 +701,21 @@ def test_api_payslip_endpoint():
 
 
 def test_api_payslip_unknown_employee_returns_404():
+    """Payslip for unknown id returns 404."""
     c = get_client()
     resp = c.post("/payroll/employees/999999/payslip", json={})
     assert resp.status_code == 404
 
 
 def test_api_invalid_employee_returns_400():
+    """Blank names are rejected with 400."""
     c = get_client()
     resp = c.post("/payroll/employees", json={"name": "", "pay_type": "salaried"})
     assert resp.status_code == 400
 
 
 def test_api_run_payroll_endpoint():
+    """Run endpoint pays all employees correctly."""
     c = get_client()
     salaried = c.post("/payroll/employees", json={
         "name": "Salaried Sam", "pay_type": "salaried", "annual_salary": 52000,
@@ -667,6 +737,7 @@ def test_api_run_payroll_endpoint():
 
 
 def test_api_run_payroll_missing_hourly_hours_reported_in_errors():
+    """Missing hourly hours surface as errors."""
     c = get_client()
     hourly = c.post("/payroll/employees", json={
         "name": "No Hours Nora", "pay_type": "hourly", "hourly_rate": 30.0,
@@ -681,18 +752,21 @@ def test_api_run_payroll_missing_hourly_hours_reported_in_errors():
 
 
 def test_api_run_payroll_invalid_filing_status_returns_400():
+    """Bogus filing status returns 400."""
     c = get_client()
     resp = c.post("/payroll/run", json={"filing_status": "bogus"})
     assert resp.status_code == 400
 
 
 def test_api_run_payroll_unknown_hours_employee_returns_404():
+    """Hours for unknown ids return 404."""
     c = get_client()
     resp = c.post("/payroll/run", json={"hours": {"999999": 10}})
     assert resp.status_code == 404
 
 
 def test_api_create_employee_with_filing_status():
+    """Filing status persists via the API."""
     c = get_client()
     resp = c.post("/payroll/employees", json={
         "name": "Married Mary", "pay_type": "salaried",
@@ -702,10 +776,12 @@ def test_api_create_employee_with_filing_status():
     body = resp.json()
     assert body["filing_status"] == "married_joint"
     # Persisted round-trip through SQLite
-    assert c.get(f"/payroll/employees/{body['id']}").json()["filing_status"] == "married_joint"
+    refetched = c.get(f"/payroll/employees/{body['id']}").json()
+    assert refetched["filing_status"] == "married_joint"
 
 
 def test_api_create_employee_invalid_filing_status_returns_400():
+    """Invalid filing status returns 400."""
     c = get_client()
     resp = c.post("/payroll/employees", json={
         "name": "Bad Status", "pay_type": "salaried",
@@ -715,6 +791,7 @@ def test_api_create_employee_invalid_filing_status_returns_400():
 
 
 def test_api_payslip_history_endpoint():
+    """History endpoint returns newest-first payslips."""
     c = get_client()
     e = c.post("/payroll/employees", json={
         "name": "History Hank", "pay_type": "salaried", "annual_salary": 52000,
@@ -728,12 +805,14 @@ def test_api_payslip_history_endpoint():
     assert [row["pay_period_index"] for row in hist] == [6, 5]  # newest first
     for row in hist:
         assert row["gross_pay"] == 2000.00
-        assert row["social_security"] > 0 and row["medicare"] > 0
+        assert row["social_security"] > 0
+        assert row["medicare"] > 0
 
     assert c.get("/payroll/employees/999999/payslips").status_code == 404
 
 
 def test_api_update_employee():
+    """PUT updates fields and future payslips reflect them."""
     c = get_client()
     e = c.post("/payroll/employees", json={
         "name": "Updatable Uma", "pay_type": "hourly", "hourly_rate": 25.0,
@@ -749,17 +828,20 @@ def test_api_update_employee():
     assert body["name"] == "Updatable Uma"  # untouched
 
     # New rate takes effect on the next payslip
-    slip = c.post(f"/payroll/employees/{e['id']}/payslip", json={"hours_worked": 40}).json()
+    slip = c.post(f"/payroll/employees/{e['id']}/payslip",
+                  json={"hours_worked": 40}).json()
     assert slip["gross_pay"] == 1200.00
 
 
 def test_api_update_unknown_employee_returns_404():
+    """Updating unknown id returns 404."""
     c = get_client()
     resp = c.put("/payroll/employees/999999", json={"name": "Ghost"})
     assert resp.status_code == 404
 
 
 def test_api_update_invalid_field_returns_400():
+    """Immutable fields are rejected."""
     c = get_client()
     e = c.post("/payroll/employees", json={
         "name": "X", "pay_type": "hourly", "hourly_rate": 10,
@@ -770,6 +852,7 @@ def test_api_update_invalid_field_returns_400():
 
 
 def test_api_liabilities_endpoint():
+    """Liabilities endpoint reports FICA totals."""
     c = get_client()
     c.post("/payroll/employees", json={
         "name": "Liable Larry", "pay_type": "salaried", "annual_salary": 52000,
@@ -791,28 +874,34 @@ def test_api_liabilities_endpoint():
 
 
 def test_api_payslip_pdf_download():
+    """PDF download serves a valid PDF."""
     c = get_client()
     e = c.post("/payroll/employees", json={
         "name": "PDF Paula", "pay_type": "salaried", "annual_salary": 52000,
     }).json()
     eid = e["id"]
-    slip = c.post(f"/payroll/employees/{eid}/payslip", json={"pay_period_index": 7}).json()
+    slip = c.post(f"/payroll/employees/{eid}/payslip",
+                  json={"pay_period_index": 7}).json()
 
     resp = c.get(f"/payroll/employees/{eid}/payslips/{slip['history_id']}/pdf")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/pdf"
     assert resp.content.startswith(b"%PDF")
-    assert f"payslip_{eid}_{slip['history_id']}.pdf" in resp.headers["content-disposition"]
+    expected_pdf = f"payslip_{eid}_{slip['history_id']}.pdf"
+    assert expected_pdf in resp.headers["content-disposition"]
 
     # Mismatched employee/payslip pair -> 404
     other = c.post("/payroll/employees", json={
         "name": "Other Otto", "pay_type": "hourly", "hourly_rate": 5,
     }).json()
-    mismatch = c.get(f"/payroll/employees/{other['id']}/payslips/{slip['history_id']}/pdf")
+    mismatch = c.get(
+        f"/payroll/employees/{other['id']}"
+        f"/payslips/{slip['history_id']}/pdf")
     assert mismatch.status_code == 404
 
 
 def test_api_company_scoped_endpoints():
+    """Company scoping works across endpoints."""
     c = get_client()
     acme_emp = c.post("/payroll/employees", json={
         "name": "Acme Annie", "pay_type": "salaried",
@@ -837,6 +926,7 @@ def test_api_company_scoped_endpoints():
 
 
 def test_api_liabilities_includes_unemployment():
+    """Liability totals include unemployment taxes."""
     c = get_client()
     c.post("/payroll/employees", json={
         "name": "CO Carla", "pay_type": "salaried",
@@ -852,6 +942,7 @@ def test_api_liabilities_includes_unemployment():
 
 
 def test_api_401k_creation_update_and_ytd():
+    """401(k) flows through create, slip, YTD, and update."""
     c = get_client()
     e = c.post("/payroll/employees", json={
         "name": "Saver Sam", "pay_type": "salaried",
@@ -875,12 +966,23 @@ def test_api_401k_creation_update_and_ytd():
 
 
 def test_api_ytd_unknown_employee_returns_404():
+    """YTD for unknown id returns 404."""
     c = get_client()
     resp = c.get("/payroll/employees/999999/ytd")
     assert resp.status_code == 404
 
 
+def test_dashboard_endpoint():
+    """Dashboard renders HTML containing the app title."""
+    c = get_client()
+    resp = c.get("/dashboard")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "Coetus Payroll" in resp.text
+
+
 def test_api_csv_export_endpoint():
+    """Export endpoint streams CSV with header and rows."""
     c = get_client()
     e = c.post("/payroll/employees", json={
         "name": "CSV Celia", "pay_type": "hourly", "hourly_rate": 20,

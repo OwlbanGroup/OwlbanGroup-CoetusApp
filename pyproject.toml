@@ -1,0 +1,7 @@
+[tool.mypy]
+# Third-party ML libraries (torch/torchvision) do not ship type stubs.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["torch", "torchvision.*"]
+ignore_missing_imports = true

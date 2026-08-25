@@ -21,6 +21,7 @@ from payroll import (
     BRACKET_PRESETS,
 )
 from payslip_pdf import render_payslip_pdf
+from dashboard import get_dashboard_html
 from decimal import Decimal
 from pydantic import BaseModel
 from typing import Optional
@@ -331,7 +332,17 @@ async def run_payroll_for_period(payload: PayrollRunRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "NVIDIA Blackwell AI Classifier API"}
+    return {
+        "message": "NVIDIA Blackwell AI Classifier API",
+        "dashboard": "/dashboard",
+        "payroll_docs": "/docs",
+    }
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard():
+    """Mobile-friendly payroll console."""
+    return Response(content=get_dashboard_html(), media_type="text/html")
 
 if __name__ == "__main__":
     import uvicorn

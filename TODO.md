@@ -10,3 +10,12 @@
 - [x] Install dependencies
 - [x] Test the system (run training/inference)
 - [x] Verify GPU usage
+
+## Payroll Module
+
+- [x] Create payroll.py: Employee records, gross pay (salaried/hourly + overtime), progressive tax, payslip generation
+- [x] Add /payroll REST endpoints to app.py
+- [x] Add test_payroll.py unit + API tests
+- [x] SQLite persistence for employees (PAYROLL_DB_PATH env var / configure_store())
+- [ ] Replace illustrative default tax brackets with real jurisdiction tables
+- [ ] Optional: batch "run payroll" endpoint across all employees per period

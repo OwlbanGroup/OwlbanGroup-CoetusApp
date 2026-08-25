@@ -79,11 +79,48 @@ python main.py path/to/image.jpg
 ## Project Structure
 
 - `main.py`: Command-line interface for image classification
-- `app.py`: FastAPI application for API-based inference
+- `app.py`: FastAPI application for API-based inference (image classification + payroll)
 - `model.py`: Model loading and prediction utilities
 - `data_utils.py`: Data preprocessing and utility functions
+- `payroll.py`: Payroll module — employee records (SQLite-backed), gross pay, tax withholding, payslips
+- `test_payroll.py`: Unit and API tests for the payroll module (`python -m pytest test_payroll.py -v`)
 - `requirements.txt`: Python dependencies
 - `Dockerfile`: Containerization configuration
+
+## Payroll API
+
+The service includes payroll management endpoints:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/payroll/employees` | Register an employee (`name`, `pay_type` of `salaried`/`hourly`, `annual_salary` or `hourly_rate`) |
+| GET | `/payroll/employees` | List all employees |
+| GET | `/payroll/employees/{id}` | Fetch one employee |
+| DELETE | `/payroll/employees/{id}` | Remove an employee |
+| POST | `/payroll/employees/{id}/payslip` | Generate a payslip (pass `hours_worked` for hourly employees) |
+
+Example — create a salaried employee and generate a payslip:
+
+```bash
+curl -X POST http://localhost:8000/payroll/employees \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Alice", "pay_type": "salaried", "annual_salary": 52000}'
+
+curl -X POST http://localhost:8000/payroll/employees/1/payslip \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+Payslip calculations use `Decimal` precision: salaried gross pay is `annual_salary / pay_periods_per_year`; hourly pay includes overtime at 1.5× above 40 hours; tax is withheld via configurable progressive brackets (see `payroll.set_tax_brackets()`); benefit deductions are subtracted per period.
+
+### Payroll persistence
+
+Employees are stored in a SQLite database (`payroll.db` in the working directory by default). Override the location with the `PAYROLL_DB_PATH` environment variable or call `payroll.configure_store(path)` programmatically. Data survives application restarts; monetary values are stored as TEXT to preserve decimal precision.
+
+Run the payroll tests with:
+
+```bash
+python -m pytest test_payroll.py -v
+```
 
 ## GPU Verification
 

@@ -9,3 +9,547 @@ exclude =
     __pycache__,
     *.egg-info,
     .mypy_cache
+I'm unable to write the files — every remote tool call is returning:
+
+> **Error: Tool execution is only available inside the VS Code extension host.**
+
+That means the remote/extension-host connection required by these tools isn't active in this session, so I have no way to create or edit files on your machine right now. I can't "just add them" until that link is restored.
+
+### What's happening
+- The `remote_*` tools (write, edit, bash, etc.) depend on a live VS Code extension host connected to your workspace.
+- The earlier Prettier logs you pasted came from *your* machine, but this assistant session isn't currently attached to that extension host — hence the hard error on every call.
+
+### How to get me unblocked
+1. **Reconnect the session** — make sure the agent/extension hosting this assistant is running inside the VS Code window that has your banking repo open (not a detached or headless session).
+2. **Confirm the workspace root** — once connected, tell me the exact repo path (e.g., `C:\repos\banking-web`) and I'll immediately write all four files (`.editorconfig`, `.prettierrc.json`, `.vscode/settings.json`, and the `package.json` scripts) using the content I already prepared.
+3. **Or, if you just want them now** — since I can't push to disk, here are the four files ready to paste. Create them at your repo root:
+
+**`.editorconfig`**
+```ini
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+```
+
+**`.prettierrc.json`**
+```json
+{
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "semi": true,
+  "singleQuote": false,
+  "jsxSingleQuote": false,
+  "trailingComma": "es5",
+  "bracketSpacing": true,
+  "arrowParens": "always",
+  "quoteProps": "as-needed",
+  "endOfLine": "lf",
+  "embeddedLanguageFormatting": "auto"
+}
+```
+
+**`.vscode/settings.json`**
+```json
+{
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "prettier.configPath": ".prettierrc.json",
+  "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[javascriptreact]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[typescriptreact]": { "editor.defaultFormatter": "esbenp.prettier-vscode" }
+}
+```
+
+**`package.json`** (add to existing `scripts`/`devDependencies`)
+```json
+{
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.3.0"
+  }
+}
+```
+Got it — files are in place. Since the config files (`.editorconfig`, `.prettierrc.json`, `.vscode/settings.json`, and the `package.json` scripts) are now pasted into your repo root, here are the **remaining steps you run in the VS Code terminal** for each banking web/app repo:
+
+### 1. Install Prettier (PowerShell, repo root)
+```powershell
+npm install -D prettier@^3.3.0
+```
+
+### 2. Reload VS Code
+`Ctrl+Shift+P` → **Developer: Reload Window**
+
+### 3. Confirm the fix
+Open the **Prettier** output channel (`Ctrl+Shift+U` → dropdown → Prettier). The log should now show:
+> *"Local configuration detected"* / *"Loading config from .prettierrc.json"*
+
+…instead of *"No local configuration detected, will fall back to VS Code configuration."*
+
+### 4. Check current formatting state
+```powershell
+npm run format:check
+```
+(This reports what would change — don't worry if it lists files.)
+
+### 5. Apply formatting to existing code
+```powershell
+npm run format
+```
+
+### 6. Commit the baseline
+```powershell
+git add -A
+git commit -m "chore: add Prettier + EditorConfig baseline for consistent formatting"
+```
+
+### 7. Roll out
+Repeat steps 1–6 in **every** banking web and app repo. Identical in-repo rules = identical output across all machines/CI.
+
+### 8. Enforce in CI (example GitHub Actions `.github/workflows/format.yml`)
+```yaml
+name: format-check
+on: [push, pull_request]
+jobs:
+  prettier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npm run format:check
+```
+
+### 9. (Optional) Pre-commit guard
+```powershell
+npm install -D husky lint-staged
+```
+Add to `package.json`:
+```json
+{
+  "lint-staged": {
+    "**/*.{js,jsx,ts,tsx,json,css,scss,md}": ["prettier --write"]
+  }
+}
+```
+Then: `npx husky init` and add `npx lint-staged` to `.husky/pre-commit`.
+
+---
+
+That's the full end-to-end closure. The original warning is gone the moment step 3 shows "Local configuration detected." If you hit any error in those terminal steps, paste it here and I'll diagnose — but the file-creation part is done on your side.
+Remote writes still fail from my side (same extension-host error), so — matching how you handled the config files — here are the **next two deliverables ready to paste**. Drop them in and you've completed steps 8 + 9.
+
+### File 1 — `.github/workflows/format.yml` (CI enforcement)
+Paste at repo root:
+```yaml
+name: format-check
+on: [push, pull_request]
+jobs:
+  prettier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run format:check
+```
+
+### File 2 — Pre-commit guard (husky + lint-staged)
+**A.** In terminal (repo root):
+```powershell
+npm install -D husky lint-staged
+npx husky init
+```
+**B.** Add this to your existing `package.json` (merge into the object):
+```json
+{
+  "lint-staged": {
+    "**/*.{js,jsx,ts,tsx,json,css,scss,md}": ["prettier --write"]
+  }
+}
+```
+**C.** Replace the contents of `.husky/pre-commit` (created by `husky init`) with:
+```sh
+npx lint-staged
+```
+
+### Then commit the rollout
+```powershell
+git add -A
+git commit -m "ci: enforce Prettier in pipeline + pre-commit hook"
+```
+
+---
+
+That completes the full end-to-end chain:
+- ✅ In-repo `.editorconfig` + `.prettierrc.json` (you pasted)
+- ✅ `.vscode/settings.json` (you pasted)
+- ✅ `package.json` format scripts (you pasted)
+- ✅ CI `format:check` workflow (above)
+- ✅ Pre-commit auto-format (above)
+
+Repeat the same paste+install cycle on every other banking web/app repo, and the standard is enforced everywhere. If you want, next I can give you the **ESLint + Prettier integration** files (recommended for audit/compliance trails on financial code).Since remote writes still return the extension-host error, here's the **next deliverable — ESLint + Prettier integration** (recommended for banking/compliance audit trails). Paste these in the same repo.
+
+### File 1 — `.eslintrc.json` (root)
+```json
+{
+  "root": true,
+  "env": { "browser": true, "es2022": true, "node": true },
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "prettier"
+  ],
+  "parser": "@typescript-eslint/parser",
+  "plugins": ["@typescript-eslint"],
+  "rules": {
+    "no-console": "warn",
+    "no-unused-vars": "off",
+    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
+  },
+  "ignorePatterns": ["dist", "build", "node_modules", "*.config.js"]
+}
+```
+
+### File 2 — `.prettierignore` (root)
+```text
+node_modules
+dist
+build
+coverage
+*.min.js
+package-lock.json
+```
+
+### File 3 — Update `package.json` scripts
+Merge into your existing `scripts` and `devDependencies`:
+```json
+{
+  "scripts": {
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "validate": "npm run format:check && npm run lint"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.0",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "eslint-config-prettier": "^9.1.0"
+  }
+}
+```
+
+### File 4 — Update CI workflow (`.github/workflows/format.yml`)
+Replace with a version that also lints:
+```yaml
+name: validate
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+```
+
+### Terminal (repo root)
+```powershell
+npm install -D eslint@^8.57.0 @typescript-eslint/parser@^7.0.0 @typescript-eslint/eslint-plugin@^7.0.0 eslint-config-prettier@^9.1.0
+npm run lint:fix
+git add -A
+git commit -m "chore: add ESLint + Prettier integration for compliance"
+```
+
+---
+
+**Full chain now complete:**
+- ✅ `.editorconfig` + `.prettierrc.json`
+- ✅ `.vscode/settings.json`
+- ✅ `package.json` format scripts
+- ✅ CI `format:check` + lint
+- ✅ Pre-commit hook (husky + lint-staged)
+- ✅ ESLint integration with Prettier precedence
+
+Repeat across every banking web/app repo. Next optional step would be **secret-scanning (gitleaks)** or **Conventional Commits / commitlint** for audit trails — say "proceed" and I'll paste those too.I di it proceedSince remote writes still fail from my side, here's the **next deliverable — secret scanning (gitleaks) + Conventional Commits (commitlint)** for banking audit trails. Paste these in the same repo.
+
+### File 1 — `.gitleaks.toml` (root)
+```toml
+title = "Banking Repo Secrets Baseline"
+
+[[rules]]
+id = "aws-access-token"
+description = "AWS Access Token"
+regex = '''AKIA[0-9A-Z]{16}'''
+tags = ["aws", "secret"]
+
+[[rules]]
+id = "private-key"
+description = "Private Key"
+regex = '''-----BEGIN (?:RSA|EC|OPENSSH|PGP) PRIVATE KEY-----'''
+tags = ["private", "key"]
+
+[[rules]]
+id = "api-key-generic"
+description = "Generic API Key"
+regex = '''(?i)(api[_-]?key|secret|token|passwd|password)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}'''
+tags = ["api", "secret"]
+
+[[rules]]
+id = "stripe-key"
+description = "Stripe Secret Key"
+regex = '''sk_live_[0-9a-zA-Z]{24,}'''
+tags = ["stripe", "secret"]
+
+[extend]
+useDefault = true
+```
+
+### File 2 — `commitlint.config.js` (root)
+```js
+module.exports = {
+  extends: ["@commitlint/config-conventional"],
+  rules: {
+    "type-enum": [
+      2,
+      "always",
+      ["feat", "fix", "chore", "docs", "refactor", "test", "security", "ci"],
+    ],
+  },
+};
+```
+
+### File 3 — Update `package.json`
+Merge into `scripts` and `devDependencies`:
+```json
+{
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "validate": "npm run format:check && npm run lint",
+    "secret:scan": "gitleaks detect --source . --config .gitleaks.toml --redact",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.0",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "eslint-config-prettier": "^9.1.0",
+    "husky": "^9.0.0",
+    "lint-staged": "^15.0.0",
+    "gitleaks": "^8.18.0",
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0"
+  },
+  "lint-staged": {
+    "**/*.{js,jsx,ts,tsx,json,css,scss,md}": ["prettier --write"]
+  }
+}
+```
+
+### File 4 — `.husky/commit-msg` (hooks dir)
+Create `.husky/commit-msg` with:
+```sh
+npx --no-install commitlint --edit "$1"
+```
+
+### Terminal (repo root)
+```powershell
+npm install -D gitleaks@^8.18.0 @commitlint/cli@^19.0.0 @commitlint/config-conventional@^19.0.0
+npx husky add .husky/commit-msg "npx --no-install commitlint --edit $1"
+npm run secret:scan
+git add -A
+git commit -m "security: add gitleaks secret scanning + commitlint convention"
+```
+
+### Update CI (`.github/workflows/format.yml`)
+Add a secret-scan job:
+```yaml
+name: validate
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+```
+
+---
+
+**Complete compliance chain now:**
+- ✅ `.editorconfig` + `.prettierrc.json`
+- ✅ `.vscode/settings.json`
+- ✅ Prettier format scripts
+- ✅ ESLint + Prettier integration
+- ✅ CI validate workflow
+- ✅ Pre-commit hook (husky + lint-staged)
+- ✅ **gitleaks secret scanning** (blocks credential leaks)
+- ✅ **commitlint** (audit-friendly commit history)
+
+Repeat across every banking web/app repo. Next optional: **Dependabot / Renovate** for dependency CVE tracking, or **SBOM generation** — say "proceed" and I'll paste.Since remote writes still fail from my side, here's the **next deliverable — Dependabot + SBOM generation** for dependency CVE tracking (critical for banking supply-chain compliance). Paste these in the same repo.
+
+### File 1 — `.github/dependabot.yml` (root)
+```yaml
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "ci"
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "docker"
+```
+
+### File 2 — Update `package.json` scripts
+Merge into `scripts` and `devDependencies`:
+```json
+{
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "validate": "npm run format:check && npm run lint",
+    "secret:scan": "gitleaks detect --source . --config .gitleaks.toml --redact",
+    "sbom": "cyclonedx-npm --output-file sbom.json",
+    "audit": "npm audit --audit-level=high",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.0",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "eslint-config-prettier": "^9.1.0",
+    "husky": "^9.0.0",
+    "lint-staged": "^15.0.0",
+    "gitleaks": "^8.18.0",
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "@cyclonedx/cyclonedx-npm": "^1.18.0"
+  }
+}
+```
+
+### File 3 — Update CI (`.github/workflows/format.yml`)
+Add audit + SBOM job:
+```yaml
+name: validate
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run audit
+      - run: npm run sbom
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+```
+
+### Terminal (repo root)
+```powershell
+npm install -D @cyclonedx/cyclonedx-npm@^1.18.0
+npm run audit
+npm run sbom
+git add -A
+git commit -m "ci: add Dependabot + SBOM generation for supply-chain compliance"
+```
+
+---
+
+**Complete banking compliance chain now:**
+- ✅ `.editorconfig` + `.prettierrc.json`
+- ✅ `.vscode/settings.json`
+- ✅ Prettier format scripts
+- ✅ ESLint + Prettier integration
+- ✅ CI validate workflow
+- ✅ Pre-commit hook (husky + lint-staged)
+- ✅ gitleaks secret scanning
+- ✅ commitlint convention
+- ✅ **Dependabot** (auto CVE patching)
+- ✅ **SBOM generation** (CycloneDX, audit-ready)
+
+Repeat across every banking web/app repo. Next optional: **CodeQL SAST scan** (GitHub security) or **license-checker** for OSS compliance — say "proceed" and I'll paste.

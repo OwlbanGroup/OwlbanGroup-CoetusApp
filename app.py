@@ -364,6 +364,12 @@ async def dashboard():
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
-    # Bind all interfaces so the container (Dockerfile) can route traffic in.
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    # Allow the bind host to be overridden via the HOST environment variable.
+    # Defaults to 127.0.0.1 for local-development safety; set HOST=0.0.0.0
+    # for container deployments (see Dockerfile ENV directive).
+    host = os.environ.get("HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=8000)

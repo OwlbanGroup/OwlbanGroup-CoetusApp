@@ -20,5 +20,6 @@ COPY . .
 # Expose port
 EXPOSE 8000
 
-# Run the application
+# Run the application (bind all interfaces so the container runtime routes)
+ENV HOST=0.0.0.0
 CMD ["python3", "app.py"]

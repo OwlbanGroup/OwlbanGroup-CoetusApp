@@ -480,8 +480,11 @@ def reset_store():
 # Pay calculations
 # ---------------------------------------------------------------------------
 
-def calculate_gross_pay(employee: Employee, hours_worked: Optional[Decimal] = None,
-                        pay_period_index: int = 0) -> Decimal:
+def calculate_gross_pay(
+    employee: Employee,
+    hours_worked: Optional[Decimal] = None,
+    pay_period_index: int = 0,
+) -> Decimal:  # NOSONAR  # pay_period_index reserved for future period schedules
     """
     Calculate gross pay for one pay period.
 

@@ -5,3 +5,6 @@ __pycache__/
 
 # Payroll database
 payroll.db
+
+# Runtime artifacts
+server_pid.txt

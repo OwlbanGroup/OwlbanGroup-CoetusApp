@@ -94,7 +94,8 @@ async function loadEmployees() {
       btn.textContent = 'Hide';
       panel.classList.remove('hidden');
       panel.innerHTML = '<div class="meta">Loading…</div>';
-      const slips = await (await fetch('/payroll/employees/' + e.id + '/payslips')).json();
+      const slips = await (await fetch(
+          '/payroll/employees/' + e.id + '/payslips')).json();
       const ytd = await (await fetch('/payroll/employees/' + e.id + '/ytd')).json();
       let html = '<div class="meta" style="margin:8px 0 2px">YTD (' +
                  ytd.pay_periods_paid + ' periods)</div>';
@@ -162,4 +163,3 @@ loadEmployees();
 def get_dashboard_html() -> str:
     """Return the dashboard page markup."""
     return DASHBOARD_HTML
-

@@ -1,11 +1,12 @@
+"""Command-line image classifier: python main.py <image_path>."""
 import sys
 import torch
-import torchvision.transforms as transforms
-from torchvision.models import resnet50
 from data_utils import load_image, preprocess_image, get_image_classes
 from model import load_model, predict
 
+
 def main():
+    """Run one classification from command-line arguments."""
     if len(sys.argv) != 2:
         print("Usage: python main.py <image_path>")
         sys.exit(1)
@@ -29,9 +30,11 @@ def main():
 
         print(f"Predicted class: {predicted_class}")
 
-    except Exception as e:
+    # CLI entry point: report any failure and exit non-zero.
+    except Exception as e:  # pylint: disable=broad-exception-caught
         print(f"Error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

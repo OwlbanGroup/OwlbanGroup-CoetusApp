@@ -93,12 +93,20 @@ class Employee:
     hourly_rate: Optional[Decimal] = None     # required for hourly
     benefits_deduction_per_period: Decimal = field(default_factory=lambda: Decimal("0"))
     pay_periods_per_year: int = 26            # bi-weekly default
-    filing_status: Optional[str] = "single"   # BRACKET_PRESETS key, or None to use active table
-    state: Optional[str] = None               # STATE_TAX_RATES key, or None for no state tax
+    # BRACKET_PRESETS key, or None to use the active table
+    filing_status: Optional[str] = "single"
+    # STATE_TAX_RATES key, or None for no state tax
+    state: Optional[str] = None
     company_id: Optional[str] = None          # optional company/grouping tag
     retirement_401k_percent: Decimal = field(default_factory=lambda: Decimal("0"))
 
     def validate(self):
+        """Raise ValueError when any field violates the model's rules."""
+        self._validate_common()
+        self._validate_pay_amounts()
+
+    def _validate_common(self):
+        """Validate fields shared by every pay type."""
         if self.pay_type not in VALID_PAY_TYPES:
             raise ValueError(f"pay_type must be one of {VALID_PAY_TYPES}")
         if not self.name or not self.name.strip():
@@ -107,21 +115,26 @@ class Employee:
             raise ValueError("pay_periods_per_year must be >= 1")
         if self.benefits_deduction_per_period < 0:
             raise ValueError("benefits_deduction_per_period cannot be negative")
-        if not (Decimal("0") <= self.retirement_401k_percent <= Decimal("100")):
+        if not Decimal("0") <= self.retirement_401k_percent <= Decimal("100"):
             raise ValueError("retirement_401k_percent must be between 0 and 100")
         if self.filing_status is not None and self.filing_status not in BRACKET_PRESETS:
-            raise ValueError(f"filing_status must be one of {sorted(BRACKET_PRESETS)} or null")
+            raise ValueError(
+                f"filing_status must be one of {sorted(BRACKET_PRESETS)} or null")
         if self.state is not None and self.state not in STATE_TAX_RATES:
             raise ValueError(f"state must be one of {sorted(STATE_TAX_RATES)} or null")
         if self.company_id is not None and (not isinstance(self.company_id, str)
                                             or not self.company_id.strip()):
             raise ValueError("company_id must be a non-empty string or null")
+
+    def _validate_pay_amounts(self):
+        """Ensure the pay amount required by pay_type is present and valid."""
         if self.pay_type == "salaried":
             if self.annual_salary is None or self.annual_salary < 0:
-                raise ValueError("salaried employees require a non-negative annual_salary")
-        else:
-            if self.hourly_rate is None or self.hourly_rate < 0:
-                raise ValueError("hourly employees require a non-negative hourly_rate")
+                raise ValueError(
+                    "salaried employees require a non-negative annual_salary")
+        elif self.hourly_rate is None or self.hourly_rate < 0:
+            raise ValueError(
+                "hourly employees require a non-negative hourly_rate")
 
 
 # 2024 US Federal income tax brackets (marginal rates on annual taxable income).
@@ -249,14 +262,14 @@ def _connect() -> sqlite3.Connection:
 
 def configure_store(path: str):
     """Point the payroll store at a different SQLite database file."""
-    global _db_path
+    global _db_path  # pylint: disable=global-statement  # config singleton
     _db_path = path
     _connect().close()
 
 
 def set_tax_brackets(brackets: List[tuple]):
     """Replace the tax brackets. Each entry is (upper_bound_or_None, rate)."""
-    global _tax_brackets
+    global _tax_brackets  # pylint: disable=global-statement  # config singleton
     _tax_brackets = list(brackets)
 
 
@@ -275,33 +288,40 @@ def set_suta_rate(rate: Decimal):
     Set the employer's SUTA tax rate (e.g. Decimal("0.031") for 3.1%).
     Rates are experience-rated per employer; this module uses one global rate.
     """
-    global _suta_rate
+    global _suta_rate  # pylint: disable=global-statement  # config singleton
     if rate < 0 or rate > 1:
         raise ValueError("SUTA rate must be between 0 and 1")
     _suta_rate = rate
 
 
 def _row_to_employee(row: sqlite3.Row) -> Employee:
+    """Build an Employee from an employees-table row."""
     return Employee(
         id=row["id"],
         name=row["name"],
         pay_type=row["pay_type"],
-        annual_salary=Decimal(row["annual_salary"]) if row["annual_salary"] is not None else None,
-        hourly_rate=Decimal(row["hourly_rate"]) if row["hourly_rate"] is not None else None,
-        benefits_deduction_per_period=Decimal(row["benefits_deduction_per_period"] or "0"),
+        annual_salary=(Decimal(row["annual_salary"])
+                       if row["annual_salary"] is not None else None),
+        hourly_rate=(Decimal(row["hourly_rate"])
+                     if row["hourly_rate"] is not None else None),
+        benefits_deduction_per_period=Decimal(
+            row["benefits_deduction_per_period"] or "0"),
         pay_periods_per_year=row["pay_periods_per_year"],
-        filing_status=row["filing_status"] if "filing_status" in row.keys() else "single",
+        filing_status=(row["filing_status"]
+                       if "filing_status" in row.keys() else "single"),
         state=row["state"] if "state" in row.keys() else None,
         company_id=row["company_id"] if "company_id" in row.keys() else None,
         retirement_401k_percent=(
             Decimal(row["retirement_401k_percent"])
-            if "retirement_401k_percent" in row.keys() and row["retirement_401k_percent"]
+            if ("retirement_401k_percent" in row.keys()
+                and row["retirement_401k_percent"])
             else Decimal("0")
         ),
     )
 
 
 def get_tax_brackets() -> List[tuple]:
+    """Return a copy of the currently active federal bracket table."""
     return list(_tax_brackets)
 
 
@@ -322,7 +342,8 @@ def add_employee(employee: Employee) -> Employee:
             (
                 employee.name.strip(),
                 employee.pay_type,
-                str(employee.annual_salary) if employee.annual_salary is not None else None,
+                (str(employee.annual_salary)
+                 if employee.annual_salary is not None else None),
                 str(employee.hourly_rate) if employee.hourly_rate is not None else None,
                 str(employee.benefits_deduction_per_period),
                 employee.pay_periods_per_year,
@@ -342,9 +363,12 @@ def add_employee(employee: Employee) -> Employee:
 
 
 def get_employee(employee_id: int) -> Optional[Employee]:
+    """Fetch one employee by id, or None when it does not exist."""
     conn = _connect()
     try:
-        row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM employees WHERE id = ?", (employee_id,)
+        ).fetchone()
         return _row_to_employee(row) if row is not None else None
     finally:
         conn.close()
@@ -367,6 +391,7 @@ def list_employees(company_id: Optional[str] = None) -> List[Employee]:
 
 
 def delete_employee(employee_id: int) -> bool:
+    """Delete an employee; True when a row was removed."""
     conn = _connect()
     try:
         cursor = conn.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
@@ -420,7 +445,8 @@ def update_employee(employee_id: int, updates: dict) -> Optional[Employee]:
             " retirement_401k_percent = ? WHERE id = ?",
             (
                 existing.name.strip(),
-                str(existing.annual_salary) if existing.annual_salary is not None else None,
+                (str(existing.annual_salary)
+                 if existing.annual_salary is not None else None),
                 str(existing.hourly_rate) if existing.hourly_rate is not None else None,
                 str(existing.benefits_deduction_per_period),
                 existing.pay_periods_per_year,
@@ -450,7 +476,6 @@ def reset_store():
         conn.close()
 
 
-
 # ---------------------------------------------------------------------------
 # Pay calculations
 # ---------------------------------------------------------------------------
@@ -463,6 +488,8 @@ def calculate_gross_pay(employee: Employee, hours_worked: Optional[Decimal] = No
     - Salaried: annual_salary / pay_periods_per_year
     - Hourly: hourly_rate * hours_worked, with hours above
       OVERTIME_THRESHOLD_HOURS paid at OVERTIME_MULTIPLIER
+
+    `pay_period_index` is reserved for future period-specific pay schedules.
     """
     if employee.pay_type == "salaried":
         if employee.annual_salary is None:
@@ -470,7 +497,8 @@ def calculate_gross_pay(employee: Employee, hours_worked: Optional[Decimal] = No
         gross = employee.annual_salary / Decimal(employee.pay_periods_per_year)
     else:
         if hours_worked is None or hours_worked < 0:
-            raise ValueError("hours_worked is required and must be >= 0 for hourly employees")
+            raise ValueError(
+                "hours_worked is required and must be >= 0 for hourly employees")
         if employee.hourly_rate is None:
             raise ValueError("hourly employees require an hourly_rate")
         rate = employee.hourly_rate
@@ -486,7 +514,8 @@ def _tax_from_brackets(amount: Decimal, brackets: List[tuple]) -> Decimal:
     previous_bound = Decimal("0")
     tax = Decimal("0")
     for upper_bound, rate in brackets:
-        bracket_width = (upper_bound - previous_bound) if upper_bound is not None else remaining
+        bracket_width = ((upper_bound - previous_bound)
+                         if upper_bound is not None else remaining)
         taxable_in_bracket = min(remaining, bracket_width)
         if taxable_in_bracket <= 0:
             break
@@ -514,10 +543,11 @@ def calculate_fica(gross_annualized: Decimal) -> tuple:
     Compute annual employee-side FICA on an annualized gross amount.
     Returns (social_security, medicare_including_additional).
     """
-    social_security = min(gross_annualized, SOCIAL_SECURITY_WAGE_BASE) * SOCIAL_SECURITY_RATE
+    social_security = (min(gross_annualized, SOCIAL_SECURITY_WAGE_BASE)
+                       * SOCIAL_SECURITY_RATE)
     medicare = gross_annualized * MEDICARE_RATE
-    additional = max(gross_annualized - ADDITIONAL_MEDICARE_THRESHOLD, Decimal("0")) \
-        * ADDITIONAL_MEDICARE_RATE
+    additional = max(gross_annualized - ADDITIONAL_MEDICARE_THRESHOLD,
+                     Decimal("0")) * ADDITIONAL_MEDICARE_RATE
     return social_security, medicare + additional
 
 
@@ -544,7 +574,8 @@ def compute_employer_taxes(gross_annualized: Decimal) -> tuple:
     but does NOT pay the employee-only Additional Medicare surtax.
     Returns (employer_social_security, employer_medicare).
     """
-    employer_ss = min(gross_annualized, SOCIAL_SECURITY_WAGE_BASE) * SOCIAL_SECURITY_RATE
+    employer_ss = (min(gross_annualized, SOCIAL_SECURITY_WAGE_BASE)
+                   * SOCIAL_SECURITY_RATE)
     employer_medicare = gross_annualized * MEDICARE_RATE
     return employer_ss, employer_medicare
 
@@ -595,15 +626,17 @@ def generate_payslip(employee: Employee, hours_worked: Optional[Decimal] = None,
     annual_retirement = retirement * periods
     taxable_annual = annual_gross - annual_retirement
 
-    annual_tax = calculate_tax(taxable_annual, brackets=_resolve_brackets(employee, tax_brackets))
+    annual_tax = calculate_tax(
+        taxable_annual, brackets=_resolve_brackets(employee, tax_brackets))
     tax_withheld = (annual_tax / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     annual_ss, annual_medicare = calculate_fica(annual_gross)
     social_security = (annual_ss / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
     medicare = (annual_medicare / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
-    state_withheld = (calculate_state_tax(taxable_annual, employee.state) / periods).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP)
+    annual_state_tax = calculate_state_tax(taxable_annual, employee.state)
+    state_withheld = (annual_state_tax / periods).quantize(TWO_PLACES,
+                                                           rounding=ROUND_HALF_UP)
 
     benefits = employee.benefits_deduction_per_period.quantize(TWO_PLACES)
     total_deductions = (tax_withheld + social_security + medicare
@@ -611,11 +644,13 @@ def generate_payslip(employee: Employee, hours_worked: Optional[Decimal] = None,
     net = (gross - total_deductions).quantize(TWO_PLACES)
 
     employer_ss_annual, employer_medi_annual = compute_employer_taxes(annual_gross)
-    employer_ss = (employer_ss_annual / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-    employer_medicare = (employer_medi_annual / periods).quantize(TWO_PLACES,
-                                                                  rounding=ROUND_HALF_UP)
+    employer_ss = (employer_ss_annual / periods).quantize(TWO_PLACES,
+                                                          rounding=ROUND_HALF_UP)
+    employer_medicare = (employer_medi_annual / periods).quantize(
+        TWO_PLACES, rounding=ROUND_HALF_UP)
 
-    futa_annual, suta_annual = compute_employer_unemployment(annual_gross, employee.state)
+    futa_annual, suta_annual = compute_employer_unemployment(annual_gross,
+                                                             employee.state)
     employer_futa = (futa_annual / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
     employer_suta = (suta_annual / periods).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
@@ -657,7 +692,8 @@ def record_payslip(slip: dict, pay_period_index: int = 0) -> int:
             (
                 slip["employee_id"],
                 pay_period_index,
-                str(slip["hours_worked"]) if slip.get("hours_worked") is not None else None,
+                str(slip["hours_worked"])
+                if slip.get("hours_worked") is not None else None,
                 str(slip["gross_pay"]),
                 str(slip["tax_withheld"]),
                 str(slip["social_security"]),
@@ -870,7 +906,6 @@ def run_payroll(hours_by_employee: Optional[Dict[int, Decimal]] = None,
         "employees_paid": len(slips),
         "employees_errored": len(errors),
     }
-
 
 
 def get_ytd_summary(employee_id: int) -> dict:

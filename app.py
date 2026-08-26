@@ -1,8 +1,20 @@
+"""
+FastAPI application: NVIDIA Blackwell AI classifier plus the Coetus
+payroll REST API (employees, payslips, runs, liabilities, exports).
+"""
+
+import io
+from decimal import Decimal
+from typing import Annotated, Optional
+
+import torch
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, Response
-import torch
+from pydantic import BaseModel
+
+from dashboard import get_dashboard_html
 from data_utils import load_image, preprocess_image, get_image_classes
-from model import load_model
+from model import load_model, predict
 from payroll import (
     Employee,
     add_employee,
@@ -21,13 +33,11 @@ from payroll import (
     BRACKET_PRESETS,
 )
 from payslip_pdf import render_payslip_pdf
-from dashboard import get_dashboard_html
-from decimal import Decimal
-from pydantic import BaseModel
-from typing import Optional
-import io
 
-app = FastAPI(title="NVIDIA Blackwell AI Classifier", description="End-to-end AI system using NVIDIA Blackwell GPUs")
+app = FastAPI(
+    title="NVIDIA Blackwell AI Classifier",
+    description="End-to-end AI system using NVIDIA Blackwell GPUs",
+)
 
 # Check for CUDA availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -37,8 +47,9 @@ print(f"Using device: {device}")
 model = load_model(device)
 class_names = get_image_classes()
 
+
 @app.post("/classify")
-async def classify_image(file: UploadFile = File(...)):
+async def classify_image(file: Annotated[UploadFile, File()]):
     """
     Classify an uploaded image using the AI model.
     """
@@ -51,11 +62,12 @@ async def classify_image(file: UploadFile = File(...)):
         input_batch = preprocess_image(image, device)
 
         # Perform prediction
-        from model import predict
         predicted_class = predict(model, input_batch, class_names)
 
-        return JSONResponse(content={"predicted_class": predicted_class}, status_code=200)
-    except Exception as e:
+        return JSONResponse(content={"predicted_class": predicted_class},
+                            status_code=200)
+    # Any failure is surfaced to the client as a 400 error payload.
+    except Exception as e:  # pylint: disable=broad-exception-caught
         return JSONResponse(content={"error": str(e)}, status_code=400)
 
 
@@ -64,6 +76,7 @@ async def classify_image(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 class EmployeeCreate(BaseModel):
+    """Request body for POST /payroll/employees."""
     name: str
     pay_type: str  # "salaried" or "hourly"
     annual_salary: Optional[float] = None   # required when salaried
@@ -82,6 +95,7 @@ class EmployeeCreate(BaseModel):
 
 
 class EmployeeUpdate(BaseModel):
+    """Partial-update body for PUT /payroll/employees/{id}."""
     model_config = {"extra": "forbid"}  # reject unknown/immutable fields outright
 
     name: Optional[str] = None
@@ -96,11 +110,13 @@ class EmployeeUpdate(BaseModel):
 
 
 class PayslipRequest(BaseModel):
+    """Body for the per-employee payslip endpoint."""
     hours_worked: Optional[float] = None  # required for hourly employees
     pay_period_index: int = 0             # period label stored with the payslip
 
 
 class PayrollRunRequest(BaseModel):
+    """Body for the batch payroll-run endpoint."""
     # Optional mapping of employee_id -> hours worked for this period.
     # Required entries for hourly employees; salaried employees ignore it.
     hours: Optional[dict] = None
@@ -111,6 +127,23 @@ class PayrollRunRequest(BaseModel):
     company_id: Optional[str] = None
 
 
+def _employee_payload(emp):
+    """Serialize an Employee into the JSON shape used by the API."""
+    return {
+        "id": emp.id,
+        "name": emp.name,
+        "pay_type": emp.pay_type,
+        "annual_salary": (float(emp.annual_salary)
+                          if emp.annual_salary is not None else None),
+        "hourly_rate": (float(emp.hourly_rate)
+                        if emp.hourly_rate is not None else None),
+        "filing_status": emp.filing_status,
+        "state": emp.state,
+        "company_id": emp.company_id,
+        "retirement_401k_percent": float(emp.retirement_401k_percent),
+    }
+
+
 @app.post("/payroll/employees")
 async def create_employee(payload: EmployeeCreate):
     """Register a new employee in the payroll system."""
@@ -118,27 +151,21 @@ async def create_employee(payload: EmployeeCreate):
         employee = Employee(
             name=payload.name,
             pay_type=payload.pay_type,
-            annual_salary=Decimal(str(payload.annual_salary)) if payload.annual_salary is not None else None,
-            hourly_rate=Decimal(str(payload.hourly_rate)) if payload.hourly_rate is not None else None,
-            benefits_deduction_per_period=Decimal(str(payload.benefits_deduction_per_period)),
+            annual_salary=(Decimal(str(payload.annual_salary))
+                           if payload.annual_salary is not None else None),
+            hourly_rate=(Decimal(str(payload.hourly_rate))
+                         if payload.hourly_rate is not None else None),
+            benefits_deduction_per_period=Decimal(
+                str(payload.benefits_deduction_per_period)),
             pay_periods_per_year=payload.pay_periods_per_year,
             filing_status=payload.filing_status,
             state=payload.state,
             company_id=payload.company_id,
-            retirement_401k_percent=Decimal(str(payload.retirement_401k_percent)),
+            retirement_401k_percent=Decimal(
+                str(payload.retirement_401k_percent)),
         )
         stored = add_employee(employee)
-        return JSONResponse(content={
-            "id": stored.id,
-            "name": stored.name,
-            "pay_type": stored.pay_type,
-            "annual_salary": float(stored.annual_salary) if stored.annual_salary is not None else None,
-            "hourly_rate": float(stored.hourly_rate) if stored.hourly_rate is not None else None,
-            "filing_status": stored.filing_status,
-            "state": stored.state,
-            "company_id": stored.company_id,
-            "retirement_401k_percent": float(stored.retirement_401k_percent),
-        }, status_code=200)
+        return JSONResponse(content=_employee_payload(stored), status_code=200)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
 
@@ -147,17 +174,7 @@ async def create_employee(payload: EmployeeCreate):
 async def get_all_employees(company_id: Optional[str] = None):
     """List employees, optionally filtered by company_id."""
     return JSONResponse(content=[
-        {
-            "id": e.id,
-            "name": e.name,
-            "pay_type": e.pay_type,
-            "annual_salary": float(e.annual_salary) if e.annual_salary is not None else None,
-            "hourly_rate": float(e.hourly_rate) if e.hourly_rate is not None else None,
-            "filing_status": e.filing_status,
-            "state": e.state,
-            "company_id": e.company_id,
-            "retirement_401k_percent": float(e.retirement_401k_percent),
-        }
+        _employee_payload(e)
         for e in list_employees(company_id=company_id)
     ], status_code=200)
 
@@ -167,18 +184,10 @@ async def read_employee(employee_id: int):
     """Fetch a single employee by ID."""
     employee = get_employee(employee_id)
     if employee is None:
-        return JSONResponse(content={"error": f"Employee {employee_id} not found"}, status_code=404)
-    return JSONResponse(content={
-        "id": employee.id,
-        "name": employee.name,
-        "pay_type": employee.pay_type,
-        "annual_salary": float(employee.annual_salary) if employee.annual_salary is not None else None,
-        "hourly_rate": float(employee.hourly_rate) if employee.hourly_rate is not None else None,
-        "filing_status": employee.filing_status,
-        "state": employee.state,
-        "company_id": employee.company_id,
-        "retirement_401k_percent": float(employee.retirement_401k_percent),
-    }, status_code=200)
+        return JSONResponse(
+            content={"error": f"Employee {employee_id} not found"},
+            status_code=404)
+    return JSONResponse(content=_employee_payload(employee), status_code=200)
 
 
 @app.delete("/payroll/employees/{employee_id}")
@@ -186,7 +195,8 @@ async def remove_employee(employee_id: int):
     """Remove an employee from the payroll system."""
     if delete_employee(employee_id):
         return JSONResponse(content={"deleted": employee_id}, status_code=200)
-    return JSONResponse(content={"error": f"Employee {employee_id} not found"}, status_code=404)
+    return JSONResponse(
+        content={"error": f"Employee {employee_id} not found"}, status_code=404)
 
 
 @app.post("/payroll/employees/{employee_id}/payslip")
@@ -194,12 +204,16 @@ async def create_payslip(employee_id: int, payload: PayslipRequest):
     """Generate a payslip for one pay period (recorded to pay history)."""
     employee = get_employee(employee_id)
     if employee is None:
-        return JSONResponse(content={"error": f"Employee {employee_id} not found"}, status_code=404)
+        return JSONResponse(
+            content={"error": f"Employee {employee_id} not found"},
+            status_code=404)
     try:
-        hours = Decimal(str(payload.hours_worked)) if payload.hours_worked is not None else None
+        hours = (Decimal(str(payload.hours_worked))
+                 if payload.hours_worked is not None else None)
         slip = generate_payslip(employee, hours_worked=hours,
                                 pay_period_index=payload.pay_period_index)
-        slip["history_id"] = record_payslip(slip, pay_period_index=payload.pay_period_index)
+        slip["history_id"] = record_payslip(
+            slip, pay_period_index=payload.pay_period_index)
         return JSONResponse(content=slip, status_code=200)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
@@ -209,7 +223,9 @@ async def create_payslip(employee_id: int, payload: PayslipRequest):
 async def read_pay_history(employee_id: int):
     """Return the recorded payslip history for an employee, newest first."""
     if get_employee(employee_id) is None:
-        return JSONResponse(content={"error": f"Employee {employee_id} not found"}, status_code=404)
+        return JSONResponse(
+            content={"error": f"Employee {employee_id} not found"},
+            status_code=404)
     return JSONResponse(content=get_pay_history(employee_id), status_code=200)
 
 
@@ -229,20 +245,14 @@ async def modify_employee(employee_id: int, payload: EmployeeUpdate):
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
     if updated is None:
-        return JSONResponse(content={"error": f"Employee {employee_id} not found"}, status_code=404)
-    return JSONResponse(content={
-        "id": updated.id,
-        "name": updated.name,
-        "pay_type": updated.pay_type,
-        "annual_salary": float(updated.annual_salary) if updated.annual_salary is not None else None,
-        "hourly_rate": float(updated.hourly_rate) if updated.hourly_rate is not None else None,
-        "benefits_deduction_per_period": float(updated.benefits_deduction_per_period),
-        "pay_periods_per_year": updated.pay_periods_per_year,
-        "filing_status": updated.filing_status,
-        "state": updated.state,
-        "company_id": updated.company_id,
-        "retirement_401k_percent": float(updated.retirement_401k_percent),
-    }, status_code=200)
+        return JSONResponse(
+            content={"error": f"Employee {employee_id} not found"},
+            status_code=404)
+    body = _employee_payload(updated)
+    body["benefits_deduction_per_period"] = float(
+        updated.benefits_deduction_per_period)
+    body["pay_periods_per_year"] = updated.pay_periods_per_year
+    return JSONResponse(content=body, status_code=200)
 
 
 @app.get("/payroll/liabilities")
@@ -251,7 +261,8 @@ async def read_liabilities(company_id: Optional[str] = None):
     Aggregate employer payroll tax liabilities (FICA match + FUTA/SUTA)
     across all recorded payslips, optionally filtered by company_id.
     """
-    return JSONResponse(content=get_liabilities_report(company_id=company_id), status_code=200)
+    return JSONResponse(
+        content=get_liabilities_report(company_id=company_id), status_code=200)
 
 
 @app.get("/payroll/employees/{employee_id}/ytd")
@@ -261,7 +272,9 @@ async def read_ytd_summary(employee_id: int):
     401(k), income-tax wages, every withholding, deductions, and net pay.
     """
     if get_employee(employee_id) is None:
-        return JSONResponse(content={"error": f"Employee {employee_id} not found"}, status_code=404)
+        return JSONResponse(
+            content={"error": f"Employee {employee_id} not found"},
+            status_code=404)
     return JSONResponse(content=get_ytd_summary(employee_id), status_code=200)
 
 
@@ -285,14 +298,16 @@ async def download_payslip_pdf(employee_id: int, history_id: int):
     """Download one recorded payslip as a PDF document."""
     record = get_payslip_record(history_id)
     if record is None or record["employee_id"] != employee_id:
-        return JSONResponse(content={"error": f"Payslip {history_id} not found"
-                                            f" for employee {employee_id}"}, status_code=404)
+        return JSONResponse(content={
+            "error": f"Payslip {history_id} not found for employee {employee_id}"
+        }, status_code=404)
     pdf_bytes = render_payslip_pdf(record)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f"attachment; filename=payslip_{employee_id}_{history_id}.pdf"
+            "Content-Disposition":
+                f"attachment; filename=payslip_{employee_id}_{history_id}.pdf"
         },
     )
 
@@ -304,7 +319,8 @@ async def run_payroll_for_period(payload: PayrollRunRequest):
     per employee plus period totals. Hourly employees require an entry in
     the `hours` mapping; missing entries are reported in `errors`.
     """
-    if payload.filing_status is not None and payload.filing_status not in BRACKET_PRESETS:
+    if (payload.filing_status is not None
+            and payload.filing_status not in BRACKET_PRESETS):
         return JSONResponse(content={
             "error": f"filing_status must be one of {sorted(BRACKET_PRESETS)}"
         }, status_code=400)
@@ -330,8 +346,10 @@ async def run_payroll_for_period(payload: PayrollRunRequest):
                          company_id=payload.company_id)
     return JSONResponse(content=result, status_code=200)
 
+
 @app.get("/")
 async def root():
+    """Service banner with links to the dashboard and API docs."""
     return {
         "message": "NVIDIA Blackwell AI Classifier API",
         "dashboard": "/dashboard",
@@ -344,6 +362,8 @@ async def dashboard():
     """Mobile-friendly payroll console."""
     return Response(content=get_dashboard_html(), media_type="text/html")
 
+
 if __name__ == "__main__":
     import uvicorn
+    # Bind all interfaces so the container (Dockerfile) can route traffic in.
     uvicorn.run(app, host="0.0.0.0", port=8000)

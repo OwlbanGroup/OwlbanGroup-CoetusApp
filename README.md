@@ -74,6 +74,10 @@ Response:
 }
 ```
 
+Predictions are labeled using the bundled ImageNet-1000 class list
+(`imagenet_classes.txt`, the standard PyTorch Hub list). If the file is
+missing, the endpoint falls back to `class_0`..`class_999` placeholders.
+
 ### Command-Line Usage
 
 Classify an image directly:
@@ -107,7 +111,9 @@ The service includes payroll management endpoints:
 | POST | `/payroll/employees/{id}/payslip` | Generate a payslip (pass `hours_worked` for hourly employees); recorded to pay history |
 | GET | `/payroll/employees/{id}/payslips` | Employee's recorded payslip history, newest first |
 | GET | `/payroll/employees/{id}/payslips/{history_id}/pdf` | Download one recorded payslip as PDF |
+| GET | `/payroll/employees/{id}/ytd` | Year-to-date summary for one employee (wages, 401(k), withholdings, net pay) |
 | GET | `/payroll/liabilities` | Employer payroll tax liabilities aggregated from pay history |
+| GET | `/payroll/export.csv` | Export the full recorded payslip journal as CSV (`?company_id=` / `?employee_id=` optional) |
 | POST | `/payroll/run` | Batch-run payroll for all employees for one pay period; every slip is recorded to pay history |
 
 Example — create a salaried employee and generate a payslip:

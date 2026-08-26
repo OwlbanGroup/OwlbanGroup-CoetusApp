@@ -1,5 +1,7 @@
+"""Image classification model loading and inference helpers."""
 import torch
 from torchvision.models import resnet50
+
 
 def load_model(device='cpu'):
     """
@@ -9,6 +11,7 @@ def load_model(device='cpu'):
     model.eval()
     model.to(device)
     return model
+
 
 def predict(model, input_batch, class_names):
     """

@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.pyc
+.mypy_cache/
 
 # Payroll database
 payroll.db

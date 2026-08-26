@@ -5,3 +5,15 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["torch", "torchvision.*"]
 ignore_missing_imports = true
+
+[tool.pylint.main]
+# The payroll test suite is intentionally comprehensive.
+max-module-lines = 1200
+# `pay_period_index` is reserved API kept for forward-compatibility.
+ignored-argument-names = "_.*|^pay_period_index$"
+
+[tool.pylint.design]
+# The Employee record and the report builders legitimately carry more
+# state/locals than the defaults assume.
+max-attributes = 15
+max-locals = 30

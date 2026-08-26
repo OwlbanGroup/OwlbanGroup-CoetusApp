@@ -53,10 +53,13 @@ def render_payslip_pdf(record: dict) -> bytes:
 
     # Identity block
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, _safe(record.get("employee_name", f"Employee {record['employee_id']}")),
+    pdf.cell(0, 8,
+             _safe(record.get("employee_name",
+                              f"Employee {record['employee_id']}")),
              new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, f"Employee ID: {record['employee_id']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Employee ID: {record['employee_id']}",
+             new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"Pay Period Index: {record.get('pay_period_index', 0)}",
              new_x="LMARGIN", new_y="NEXT")
     if record.get("hours_worked") is not None:

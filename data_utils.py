@@ -1,15 +1,22 @@
+"""Image loading and preprocessing utilities for the classifier."""
 import os
 from PIL import Image
-import torch
 from torchvision import transforms
+
 
 def load_image(image_path):
     """
-    Load an image from the given path and return it as a PIL Image.
+    Load an image and return it as a PIL Image.
+
+    Accepts either a filesystem path (str/pathlib) or a file-like object
+    (e.g. io.BytesIO from an uploaded file). A FileNotFoundError is raised
+    for a missing path; file-like objects are opened directly.
     """
-    if not os.path.exists(image_path):
-        raise FileNotFoundError(f"Image file '{image_path}' not found.")
+    if isinstance(image_path, (str, bytes, os.PathLike)):
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Image file '{image_path}' not found.")
     return Image.open(image_path)
+
 
 def preprocess_image(image, device='cpu'):
     """
@@ -25,11 +32,24 @@ def preprocess_image(image, device='cpu'):
     input_batch = input_tensor.unsqueeze(0).to(device)
     return input_batch
 
+
+_IMAGENET_CLASSES_PATH = os.path.join(os.path.dirname(__file__),
+                                      "imagenet_classes.txt")
+
+
 def get_image_classes():
     """
-    Return the list of ImageNet class names.
+    Return 1000 ImageNet class labels aligned with the model's softmax output.
+
+    Reads ``imagenet_classes.txt`` (the standard PyTorch Hub label list)
+    shipped next to this module. Falls back to ``class_0..class_999``
+    placeholders when the file is missing, so prediction always resolves.
     """
-    # Full ImageNet class names (1000 classes)
-    return [
-    'toilet tissue'
-    ]
+    try:
+        with open(_IMAGENET_CLASSES_PATH, encoding="utf-8") as fh:
+            labels = [line.strip() for line in fh if line.strip()]
+        if len(labels) == 1000:
+            return labels
+    except OSError:
+        pass
+    return [f"class_{i}" for i in range(1000)]

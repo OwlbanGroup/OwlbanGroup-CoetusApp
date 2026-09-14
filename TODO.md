@@ -32,3 +32,10 @@
 - [x] Pre-tax 401(k) deductions (reduces income-tax wages, not FICA)
 - [x] Per-employee YTD summaries (GET /payroll/employees/{id}/ytd)
 - [x] CSV payroll journal export (GET /payroll/export.csv)
+
+## Synthetic Human Training Data
+
+- [x] Create synthetic_data.py: seeded generators for profiles, dialogue, faces, voice, plus dataset manifests
+- [x] Add /synthetic/profiles, /synthetic/dialogue, /synthetic/face, /synthetic/voice, /synthetic/capabilities endpoints to app.py
+- [x] Add test_synthetic_data.py unit + API tests (`python -m pytest test_synthetic_data.py -v`)
+- [x] Document the synthetic data API in README.md

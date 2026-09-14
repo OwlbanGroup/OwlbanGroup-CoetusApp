@@ -38,6 +38,20 @@ from payroll import (
     BRACKET_PRESETS,
 )
 from payslip_pdf import render_payslip_pdf
+from synthetic_data import (
+    MAX_DIALOGUE_COUNT,
+    MAX_PROFILE_COUNT,
+    SUPPORTED_SAMPLE_RATES,
+    GENERATOR_VERSION,
+    dataset_manifest,
+    dialogue_to_jsonl,
+    generate_dialogue,
+    generate_profiles,
+    profiles_to_csv,
+    profiles_to_jsonl,
+    render_face_png,
+    render_voice_wav,
+)
 
 logger = logging.getLogger("coetus.app")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -430,6 +444,182 @@ async def read_tax_config():
     state presets, and all bracket tables.
     """
     return JSONResponse(content=get_tax_config(), status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic human training-data endpoints
+# ---------------------------------------------------------------------------
+
+
+class SyntheticProfilesRequest(BaseModel):
+    """Body for POST /synthetic/profiles."""
+    count: int = 10
+    seed: Optional[int] = None
+    locale: str = "en"
+    format: str = "json"  # json | csv | jsonl
+
+
+class SyntheticDialogueRequest(BaseModel):
+    """Body for POST /synthetic/dialogue."""
+    count: int = 10
+    seed: Optional[int] = None
+    min_turns: int = 2
+    max_turns: int = 6
+    format: str = "json"  # json | jsonl
+
+
+@app.post("/synthetic/profiles")
+async def create_synthetic_profiles(payload: SyntheticProfilesRequest):
+    """
+    Generate synthetic human profile records (fabricated names, contact
+    details, occupations) for tabular-model training and schema testing.
+
+    ``format`` selects the response body: ``json`` (default) returns a
+    dataset manifest plus the records; ``csv`` and ``jsonl`` stream the
+    records as downloadable text. All records are marked ``synthetic``.
+    """
+    if payload.format not in ("json", "csv", "jsonl"):
+        return JSONResponse(content={
+            "error": "format must be one of: json, csv, jsonl"
+        }, status_code=400)
+    if payload.count < 1 or payload.count > MAX_PROFILE_COUNT:
+        return JSONResponse(content={
+            "error": f"count must be between 1 and {MAX_PROFILE_COUNT}"
+        }, status_code=400)
+
+    try:
+        profiles = generate_profiles(count=payload.count, seed=payload.seed,
+                                     locale=payload.locale)
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+
+    manifest = dataset_manifest("profiles", payload.count, payload.seed,
+                                extra={"locale": payload.locale})
+    if payload.format == "csv":
+        return Response(content=profiles_to_csv(profiles),
+                        media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="synthetic_profiles.csv"'})
+    if payload.format == "jsonl":
+        return Response(content=profiles_to_jsonl(profiles),
+                        media_type="application/x-ndjson",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="synthetic_profiles.jsonl"'})
+    return JSONResponse(content={"manifest": manifest, "profiles": profiles},
+                        status_code=200)
+
+
+@app.post("/synthetic/dialogue")
+async def create_synthetic_dialogue(payload: SyntheticDialogueRequest):
+    """
+    Generate synthetic user/assistant dialogue samples with intent
+    labels for NLP fine-tuning pipelines. ``format`` selects ``json``
+    (manifest + samples) or ``jsonl`` (streamed JSON Lines).
+    """
+    if payload.format not in ("json", "jsonl"):
+        return JSONResponse(content={
+            "error": "format must be one of: json, jsonl"
+        }, status_code=400)
+    if payload.count < 1 or payload.count > MAX_DIALOGUE_COUNT:
+        return JSONResponse(content={
+            "error": f"count must be between 1 and {MAX_DIALOGUE_COUNT}"
+        }, status_code=400)
+
+    try:
+        dialogues = generate_dialogue(
+            count=payload.count, seed=payload.seed,
+            min_turns=payload.min_turns, max_turns=payload.max_turns)
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+
+    manifest = dataset_manifest("dialogue", payload.count, payload.seed,
+                                extra={"min_turns": payload.min_turns,
+                                       "max_turns": payload.max_turns})
+    if payload.format == "jsonl":
+        return Response(content=dialogue_to_jsonl(dialogues),
+                        media_type="application/x-ndjson",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="synthetic_dialogue.jsonl"'})
+    return JSONResponse(content={"manifest": manifest, "dialogues": dialogues},
+                        status_code=200)
+
+
+@app.get("/synthetic/face")
+async def get_synthetic_face(seed: Optional[int] = None, size: int = 128):
+    """
+    Download a procedurally rendered synthetic face image as PNG.
+
+    Structured placeholder imagery for vision-pipeline smoke tests —
+    the same ``seed`` always yields the same image.
+    """
+    if size < 32 or size > 1024:
+        return JSONResponse(content={
+            "error": "size must be between 32 and 1024"
+        }, status_code=400)
+    png = render_face_png(seed=seed, size=size)
+    return Response(content=png, media_type="image/png",
+                    headers={"Content-Disposition":
+                             'attachment; filename="synthetic_face.png"'})
+
+
+@app.get("/synthetic/voice")
+async def get_synthetic_voice(seed: Optional[int] = None,
+                              duration_seconds: float = 1.5,
+                              sample_rate: int = 16000):
+    """
+    Download a synthesized speech-like audio clip as WAV (16-bit PCM
+    mono). Formant-style placeholder audio for audio-pipeline smoke
+    tests — not intelligible speech.
+    """
+    if sample_rate not in SUPPORTED_SAMPLE_RATES:
+        return JSONResponse(content={
+            "error": f"sample_rate must be one of {list(SUPPORTED_SAMPLE_RATES)}"
+        }, status_code=400)
+    if duration_seconds < 0.1 or duration_seconds > 10.0:
+        return JSONResponse(content={
+            "error": "duration_seconds must be between 0.1 and 10.0"
+        }, status_code=400)
+    try:
+        wav = render_voice_wav(seed=seed, duration_seconds=duration_seconds,
+                               sample_rate=sample_rate)
+    except (TypeError, ValueError) as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+    return Response(content=wav, media_type="audio/wav",
+                    headers={"Content-Disposition":
+                             'attachment; filename="synthetic_voice.wav"'})
+
+
+@app.get("/synthetic/capabilities")
+async def get_synthetic_capabilities():
+    """Describe the synthetic data generators and their parameter ranges."""
+    return JSONResponse(content={
+        "generator_version": GENERATOR_VERSION,
+        "generators": {
+            "profiles": {
+                "endpoint": "POST /synthetic/profiles",
+                "formats": ["json", "csv", "jsonl"],
+                "max_count": MAX_PROFILE_COUNT,
+            },
+            "dialogue": {
+                "endpoint": "POST /synthetic/dialogue",
+                "formats": ["json", "jsonl"],
+                "max_count": MAX_DIALOGUE_COUNT,
+            },
+            "faces": {
+                "endpoint": "GET /synthetic/face",
+                "format": "png",
+                "size_range": [32, 1024],
+            },
+            "voice": {
+                "endpoint": "GET /synthetic/voice",
+                "format": "wav",
+                "sample_rates": list(SUPPORTED_SAMPLE_RATES),
+                "duration_range_seconds": [0.1, 10.0],
+            },
+        },
+        "note": "All generated records are synthetic; none contain real "
+                "personal data. Seeds make every dataset reproducible.",
+    }, status_code=200)
 
 
 @app.get("/health", include_in_schema=False)

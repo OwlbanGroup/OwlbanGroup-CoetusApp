@@ -6,6 +6,7 @@ This project implements an end-to-end AI system optimized for NVIDIA Blackwell G
 
 - **GPU Acceleration**: Leverages NVIDIA Blackwell GPUs for high-performance AI computations.
 - **Image Classification**: Uses ResNet50 pre-trained model for ImageNet classification.
+- **Synthetic Human Training Data**: Seeded, reproducible generators for synthetic profiles, dialogue, face images, and voice clips.
 - **API Interface**: FastAPI-based REST API for easy integration.
 - **Containerized Deployment**: Docker support for GPU-enabled containers.
 - **Modular Design**: Separated utilities for data handling, model management, and inference.
@@ -93,7 +94,9 @@ python main.py path/to/image.jpg
 - `model.py`: Model loading and prediction utilities
 - `data_utils.py`: Data preprocessing and utility functions
 - `payroll.py`: Payroll module — employee records (SQLite-backed), gross pay, tax withholding, payslips
+- `synthetic_data.py`: Synthetic human training-data generators (profiles, dialogue, faces, voice)
 - `test_payroll.py`: Unit and API tests for the payroll module (`python -m pytest test_payroll.py -v`)
+- `test_synthetic_data.py`: Unit and API tests for the synthetic data module (`python -m pytest test_synthetic_data.py -v`)
 - `requirements.txt`: Python dependencies
 - `Dockerfile`: Containerization configuration
 
@@ -206,6 +209,69 @@ Run the payroll tests with:
 ```bash
 python -m pytest test_payroll.py -v
 ```
+
+## Synthetic Human Training Data
+
+The service ships seeded generators for fully synthetic human training
+data — no real personal information is ever used, and every record is
+marked `"synthetic": true`. A given `seed` always reproduces the same
+dataset; each response includes a manifest recording the generator
+version, kind, count, and effective seed.
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| POST | `/synthetic/profiles` | Synthetic human profiles (name, age, contact details, occupation). `format`: `json` (default), `csv`, or `jsonl`; up to 10,000 per call |
+| POST | `/synthetic/dialogue` | Synthetic user/assistant conversations with intent labels. `format`: `json` or `jsonl`; `min_turns`/`max_turns` configurable |
+| GET | `/synthetic/face` | Procedurally drawn face-like image as PNG (`seed`, `size` 32–1024) |
+| GET | `/synthetic/voice` | Speech-like synthesized audio as 16-bit PCM mono WAV (`seed`, `duration_seconds` 0.1–10, `sample_rate` 8k/16k/22.05k/44.1k) |
+| GET | `/synthetic/capabilities` | Generator inventory with parameter ranges |
+
+Examples:
+
+```bash
+# 500 seeded synthetic profiles as JSON Lines for a tabular pipeline
+curl -X POST http://localhost:8000/synthetic/profiles \
+  -H "Content-Type: application/json" \
+  -d '{"count": 500, "seed": 42, "format": "jsonl"}' \
+  -O -J
+
+# 1,000 labeled dialogue samples for NLP fine-tuning
+curl -X POST http://localhost:8000/synthetic/dialogue \
+  -H "Content-Type: application/json" \
+  -d '{"count": 1000, "seed": 7, "format": "jsonl"}' \
+  -O -J
+
+# A 256x256 synthetic face and a 2-second voice clip
+curl -O -J "http://localhost:8000/synthetic/face?seed=1&size=256"
+curl -O -J "http://localhost:8000/synthetic/voice?seed=1&duration_seconds=2&sample_rate=22050"
+```
+
+The generators are also usable programmatically:
+
+```python
+from synthetic_data import (
+    generate_profiles, generate_dialogue, generate_face_image,
+    generate_voice_clip, dataset_manifest,
+)
+
+profiles = generate_profiles(count=1000, seed=42)
+dialogues = generate_dialogue(count=1000, seed=42)
+face = generate_face_image(seed=42, size=128)   # PIL Image
+clip = generate_voice_clip(seed=42)             # {"waveform": np.int16, ...}
+manifest = dataset_manifest("profiles", 1000, 42)
+```
+
+Notes and limits:
+
+- **Faces** are procedural placeholder imagery for pipeline smoke tests —
+  not photorealistic and not GAN output. **Voice** clips are formant-style
+  synthesis — voice-like but not intelligible speech. For photorealistic
+  faces or natural speech, plug a dedicated generative model in behind
+  the same endpoints.
+- **Privacy by construction**: names, emails, phones, and addresses come
+  from fixed fabricated pools (emails use `example.*` domains) and are
+  never derived from real individuals.
+- Run the synthetic-data tests with `python -m pytest test_synthetic_data.py -v`.
 
 ## Production notes
 

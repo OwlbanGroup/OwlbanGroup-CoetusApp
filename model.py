@@ -6,8 +6,15 @@ from torchvision.models import resnet50
 def load_model(device='cpu'):
     """
     Load a pre-trained ResNet50 model and move it to the specified device.
+
+    Uses the modern torchvision weights API when available and falls back
+    to the legacy `pretrained=True` flag on older torchvision releases.
     """
-    model = resnet50(pretrained=True)
+    try:
+        from torchvision.models import ResNet50_Weights
+        model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+    except ImportError:  # torchvision < 0.13
+        model = resnet50(pretrained=True)
     model.eval()
     model.to(device)
     return model

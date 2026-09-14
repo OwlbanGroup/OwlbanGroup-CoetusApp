@@ -26,8 +26,10 @@ from payroll import (
     record_payslip,
     get_pay_history,
     get_payslip_record,
+    delete_payslip_record,
     get_liabilities_report,
     get_ytd_summary,
+    get_tax_config,
     export_history_csv,
     run_payroll,
     BRACKET_PRESETS,
@@ -125,6 +127,8 @@ class PayrollRunRequest(BaseModel):
     filing_status: Optional[str] = None
     # Optionally restrict the run to one company's employees.
     company_id: Optional[str] = None
+    # Period label stored with every payslip recorded by this run.
+    pay_period_index: int = 0
 
 
 def _employee_payload(emp):
@@ -343,8 +347,52 @@ async def run_payroll_for_period(payload: PayrollRunRequest):
 
     brackets = BRACKET_PRESETS[payload.filing_status] if payload.filing_status else None
     result = run_payroll(hours_by_employee=hours_map, tax_brackets=brackets,
+                         pay_period_index=payload.pay_period_index,
                          company_id=payload.company_id)
     return JSONResponse(content=result, status_code=200)
+
+
+@app.get("/payroll/employees/{employee_id}/payslips/{history_id}")
+async def read_payslip_record(employee_id: int, history_id: int):
+    """Fetch one recorded payslip as JSON by its history row id."""
+    record = get_payslip_record(history_id)
+    if record is None or record["employee_id"] != employee_id:
+        return JSONResponse(content={
+            "error": f"Payslip {history_id} not found for employee {employee_id}"
+        }, status_code=404)
+    return JSONResponse(content=record, status_code=200)
+
+
+@app.delete("/payroll/employees/{employee_id}/payslips/{history_id}")
+async def remove_payslip_record(employee_id: int, history_id: int):
+    """
+    Void (delete) one recorded payslip. Returns 404 when the payslip does
+    not exist or belongs to a different employee. Liabilities, YTD
+    summaries, and CSV exports reflect the removal immediately.
+    """
+    deleted = delete_payslip_record(history_id, employee_id=employee_id)
+    if not deleted:
+        return JSONResponse(content={
+            "error": f"Payslip {history_id} not found for employee {employee_id}"
+        }, status_code=404)
+    return JSONResponse(content={"deleted": history_id,
+                                 "employee_id": employee_id}, status_code=200)
+
+
+@app.get("/payroll/rates")
+async def read_tax_config():
+    """
+    Current payroll tax configuration: FICA rates and wage bases, the
+    employer SUTA rate, overtime rules, available filing statuses and
+    state presets, and all bracket tables.
+    """
+    return JSONResponse(content=get_tax_config(), status_code=200)
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    """Liveness probe for container orchestrators and load balancers."""
+    return {"status": "ok"}
 
 
 @app.get("/")

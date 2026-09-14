@@ -294,6 +294,42 @@ def set_suta_rate(rate: Decimal):
     _suta_rate = rate
 
 
+def get_suta_rate() -> Decimal:
+    """Return the currently active employer SUTA rate."""
+    return _suta_rate
+
+
+def get_tax_config() -> dict:
+    """
+    Return the active payroll tax configuration as JSON-serializable
+    primitives: FICA rates and wage bases, the employer SUTA rate,
+    overtime rules, available filing statuses and state presets, and
+    every bracket table. Useful for powering client-side forms.
+    """
+    def _table(brackets: List[tuple]) -> List[dict]:
+        return [{"up_to": (float(bound) if bound is not None else None),
+                 "rate": float(rate)} for bound, rate in brackets]
+
+    return {
+        "filing_statuses": sorted(BRACKET_PRESETS),
+        "states": sorted(STATE_TAX_RATES),
+        "social_security_rate": float(SOCIAL_SECURITY_RATE),
+        "social_security_wage_base": float(SOCIAL_SECURITY_WAGE_BASE),
+        "medicare_rate": float(MEDICARE_RATE),
+        "additional_medicare_rate": float(ADDITIONAL_MEDICARE_RATE),
+        "additional_medicare_threshold": float(ADDITIONAL_MEDICARE_THRESHOLD),
+        "futa_rate": float(FUTA_RATE),
+        "futa_wage_base": float(FUTA_WAGE_BASE),
+        "suta_rate": float(_suta_rate),
+        "suta_wage_bases": {k: float(v) for k, v in SUTA_WAGE_BASES.items()},
+        "overtime_threshold_hours": float(OVERTIME_THRESHOLD_HOURS),
+        "overtime_multiplier": float(OVERTIME_MULTIPLIER),
+        "active_brackets": _table(_tax_brackets),
+        "bracket_presets": {status: _table(table)
+                            for status, table in BRACKET_PRESETS.items()},
+    }
+
+
 def _row_to_employee(row: sqlite3.Row) -> Employee:
     """Build an Employee from an employees-table row."""
     return Employee(
@@ -742,6 +778,30 @@ def get_pay_history(employee_id: int) -> List[dict]:
             (employee_id,),
         ).fetchall()
         return [_history_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_payslip_record(history_id: int,
+                          employee_id: Optional[int] = None) -> bool:
+    """
+    Void (delete) one recorded payslip by its history row id. When
+    `employee_id` is given, the row must also belong to that employee.
+    Returns True when a row was removed. Aggregated reports (liabilities,
+    YTD summaries, CSV export) reflect the removal automatically since
+    they are computed from the remaining pay_history rows.
+    """
+    conn = _connect()
+    try:
+        if employee_id is None:
+            cursor = conn.execute(
+                "DELETE FROM pay_history WHERE id = ?", (history_id,))
+        else:
+            cursor = conn.execute(
+                "DELETE FROM pay_history WHERE id = ? AND employee_id = ?",
+                (history_id, employee_id))
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 

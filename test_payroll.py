@@ -9,6 +9,7 @@ import io
 import os
 import tempfile
 
+import pytest
 from decimal import Decimal
 from functools import lru_cache
 
@@ -1000,3 +1001,138 @@ def test_api_csv_export_endpoint():
     # Empty scope yields header only
     empty = c.get("/payroll/export.csv", params={"employee_id": 999999})
     assert len(empty.text.strip().splitlines()) == 1
+
+
+# ---------------------------------------------------------------------------
+# New-feature tests: payslip record fetch/void, tax config, health, run period
+# ---------------------------------------------------------------------------
+
+def test_get_suta_rate_accessor():
+    """get_suta_rate mirrors whatever set_suta_rate last configured."""
+    original = payroll.get_suta_rate()
+    try:
+        payroll.set_suta_rate(Decimal("0.031"))
+        assert payroll.get_suta_rate() == Decimal("0.031")
+    finally:
+        payroll.set_suta_rate(original)
+    assert payroll.get_suta_rate() == original
+
+
+def test_get_tax_config_contents():
+    """Tax config exposes statuses, states, rates, and bracket tables."""
+    cfg = payroll.get_tax_config()
+    assert "single" in cfg["filing_statuses"]
+    assert "married_joint" in cfg["filing_statuses"]
+    assert "ca" in cfg["states"] and "ny" in cfg["states"]
+    assert cfg["social_security_rate"] == 0.062
+    assert cfg["social_security_wage_base"] == 168600.0
+    assert cfg["medicare_rate"] == 0.0145
+    assert cfg["additional_medicare_rate"] == 0.009
+    assert cfg["additional_medicare_threshold"] == 200000.0
+    assert cfg["futa_rate"] == 0.006
+    assert cfg["overtime_threshold_hours"] == 40.0
+    assert cfg["overtime_multiplier"] == 1.5
+    # Bracket tables serialize as {up_to, rate} dicts with a null top bracket
+    single = cfg["bracket_presets"]["single"]
+    assert single[0] == {"up_to": 11600.0, "rate": 0.10}
+    assert single[-1] == {"up_to": None, "rate": 0.37}
+    assert cfg["active_brackets"][-1]["rate"] == 0.37
+
+
+def test_delete_payslip_record_unit():
+    """delete_payslip_record removes a row scoped to the employee."""
+    fresh_store()
+    emp = payroll.add_employee(make_salaried("52000"))
+    slip = generate_payslip(emp)
+    history_id = payroll.record_payslip(slip)
+
+    assert payroll.get_payslip_record(history_id) is not None
+    # Wrong employee id does not delete anything
+    assert payroll.delete_payslip_record(history_id, employee_id=999999) is False
+    assert payroll.get_payslip_record(history_id) is not None
+    # Correct employee id deletes it
+    assert payroll.delete_payslip_record(history_id, employee_id=emp.id) is True
+    assert payroll.get_payslip_record(history_id) is None
+    assert payroll.delete_payslip_record(history_id) is False
+
+
+def test_api_single_payslip_record():
+    """GET one recorded payslip as JSON, with 404s for mismatches."""
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "Record Rita", "pay_type": "salaried", "annual_salary": 52000,
+    }).json()
+    slip = c.post(f"/payroll/employees/{e['id']}/payslip", json={}).json()
+
+    resp = c.get(f"/payroll/employees/{e['id']}/payslips/{slip['history_id']}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == slip["history_id"]
+    assert body["employee_id"] == e["id"]
+    assert body["gross_pay"] == slip["gross_pay"]
+    assert body["net_pay"] == slip["net_pay"]
+
+    # Unknown history id
+    assert c.get(f"/payroll/employees/{e['id']}/payslips/999999").status_code == 404
+    # Belongs to another employee
+    other = c.post("/payroll/employees", json={
+        "name": "Mismatch Moe", "pay_type": "salaried", "annual_salary": 52000,
+    }).json()
+    assert c.get(
+        f"/payroll/employees/{other['id']}/payslips/{slip['history_id']}"
+    ).status_code == 404
+
+
+def test_api_void_payslip_record():
+    """DELETE voids a recorded payslip and updates YTD counts."""
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "Void Vic", "pay_type": "salaried", "annual_salary": 52000,
+    }).json()
+    slip = c.post(f"/payroll/employees/{e['id']}/payslip", json={}).json()
+    hid = slip["history_id"]
+
+    resp = c.delete(f"/payroll/employees/{e['id']}/payslips/{hid}")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == hid
+
+    ytd = c.get(f"/payroll/employees/{e['id']}/ytd").json()
+    assert ytd["pay_periods_paid"] == 0
+    assert ytd["gross_wages"] == 0.0
+
+    # Deleting again (or for the wrong employee) returns 404
+    assert c.delete(f"/payroll/employees/{e['id']}/payslips/{hid}").status_code == 404
+    assert c.delete(f"/payroll/employees/999999/payslips/{hid}").status_code == 404
+
+
+def test_api_run_payroll_period_index():
+    """pay_period_index passed to /payroll/run is stored on each payslip."""
+    c = get_client()
+    e = c.post("/payroll/employees", json={
+        "name": "Period Pete", "pay_type": "salaried", "annual_salary": 52000,
+    }).json()
+    result = c.post("/payroll/run", json={"pay_period_index": 7}).json()
+    assert result["employees_paid"] >= 1
+    mine = next(s for s in result["payslips"] if s["employee_id"] == e["id"])
+    record = c.get(
+        f"/payroll/employees/{e['id']}/payslips/{mine['history_id']}").json()
+    assert record["pay_period_index"] == 7
+
+
+def test_api_rates_endpoint():
+    """/payroll/rates exposes the active tax configuration."""
+    c = get_client()
+    resp = c.get("/payroll/rates")
+    assert resp.status_code == 200
+    cfg = resp.json()
+    assert "single" in cfg["filing_statuses"]
+    assert "ca" in cfg["states"]
+    assert cfg["suta_rate"] == pytest.approx(0.027)
+
+
+def test_api_health_endpoint():
+    """/health answers ok for liveness probes."""
+    c = get_client()
+    resp = c.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}

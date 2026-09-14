@@ -110,11 +110,15 @@ The service includes payroll management endpoints:
 | DELETE | `/payroll/employees/{id}` | Remove an employee |
 | POST | `/payroll/employees/{id}/payslip` | Generate a payslip (pass `hours_worked` for hourly employees); recorded to pay history |
 | GET | `/payroll/employees/{id}/payslips` | Employee's recorded payslip history, newest first |
+| GET | `/payroll/employees/{id}/payslips/{history_id}` | Fetch one recorded payslip as JSON |
+| DELETE | `/payroll/employees/{id}/payslips/{history_id}` | Void (delete) one recorded payslip |
 | GET | `/payroll/employees/{id}/payslips/{history_id}/pdf` | Download one recorded payslip as PDF |
 | GET | `/payroll/employees/{id}/ytd` | Year-to-date summary for one employee (wages, 401(k), withholdings, net pay) |
 | GET | `/payroll/liabilities` | Employer payroll tax liabilities aggregated from pay history |
 | GET | `/payroll/export.csv` | Export the full recorded payslip journal as CSV (`?company_id=` / `?employee_id=` optional) |
+| GET | `/payroll/rates` | Active tax configuration (FICA/FUTA/SUTA rates, filing statuses, state presets, bracket tables) |
 | POST | `/payroll/run` | Batch-run payroll for all employees for one pay period; every slip is recorded to pay history |
+| GET | `/health` | Liveness probe (`{"status": "ok"}`, excluded from the OpenAPI schema) |
 
 Example — create a salaried employee and generate a payslip:
 
@@ -132,10 +136,18 @@ Batch-run payroll for all employees in one call:
 ```bash
 curl -X POST http://localhost:8000/payroll/run \
   -H "Content-Type: application/json" \
-  -d '{"hours": {"2": 45}, "filing_status": "single"}'
+  -d '{"hours": {"2": 45}, "filing_status": "single", "pay_period_index": 3}'
 ```
 
-The response contains a payslip per employee, period totals (`gross_pay`, `tax_withheld`, `benefits_deduction`, `net_pay`), and an `errors` list for hourly employees who were missing from `hours`.
+The response contains a payslip per employee, period totals (`gross_pay`, `tax_withheld`, `benefits_deduction`, `net_pay`), and an `errors` list for hourly employees who were missing from `hours`. The optional `pay_period_index` labels every payslip recorded by the run.
+
+A wrongly recorded payslip can be voided after the fact:
+
+```bash
+curl -X DELETE http://localhost:8000/payroll/employees/1/payslips/12
+```
+
+Liabilities, YTD summaries, and CSV exports reflect the removal immediately. The current tax configuration (useful for building client forms) is available at `GET /payroll/rates`.
 
 Payslip calculations use `Decimal` precision: salaried gross pay is `annual_salary / pay_periods_per_year`; hourly pay includes overtime at 1.5× above 40 hours; benefit deductions are subtracted per period.
 
@@ -187,13 +199,22 @@ Every payslip generated via `POST /payroll/employees/{id}/payslip` or `POST /pay
 
 ### Payroll persistence
 
-Employees are stored in a SQLite database (`payroll.db` in the working directory by default). Override the location with the `PAYROLL_DB_PATH` environment variable or call `payroll.configure_store(path)` programmatically. Data survives application restarts; monetary values are stored as TEXT to preserve decimal precision.
+Employees are stored in a SQLite database (`payroll.db` in the working directory by default). Override the location with the `PAYROLL_DB_PATH` environment variable or call `payroll.configure_store(path)` programmatically. Data survives application restarts; monetary values are stored as TEXT to preserve decimal precision. The connection layer enables **WAL journaling** and a **30 s busy timeout**, so concurrent live requests can read while another request writes without "database is locked" failures.
 
 Run the payroll tests with:
 
 ```bash
 python -m pytest test_payroll.py -v
 ```
+
+## Production notes
+
+- **Health checks** — `GET /health` returns `{"status": "ok"}`; the Dockerfile wires it into a `HEALTHCHECK` (with a generous `start-period` for the first model load).
+- **CORS** — set `CORS_ORIGINS` to a comma-separated allowlist (e.g. `CORS_ORIGINS="https://hr.example.com,https://ops.example.com"`) for browser clients on other origins. Unset means no cross-origin browser access.
+- **Logging** — the app uses structured `logging` (module `coetus.app`). Set `LOG_LEVEL` (e.g. `DEBUG`) to change verbosity. Unhandled errors are logged with full tracebacks server-side and returned to clients as a generic `500 {"error": "Internal server error"}`.
+- **Uploads** — `/classify` rejects files larger than 10 MB with `413`.
+- **Container** — the image runs as an unprivileged `appuser` and owns `/app`, so the SQLite database is writable.
+- **Backups** — back up `payroll.db` (plus the `-wal`/`-shm` WAL sidecar files, or checkpoint first) on a schedule; the DB is the system of record for all payroll history.
 
 ## GPU Verification
 

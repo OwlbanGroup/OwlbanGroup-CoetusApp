@@ -4,11 +4,14 @@ payroll REST API (employees, payslips, runs, liabilities, exports).
 """
 
 import io
+import logging
+import os
 from decimal import Decimal
 from typing import Annotated, Optional
 
 import torch
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -36,18 +39,52 @@ from payroll import (
 )
 from payslip_pdf import render_payslip_pdf
 
+logger = logging.getLogger("coetus.app")
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+
 app = FastAPI(
     title="NVIDIA Blackwell AI Classifier",
     description="End-to-end AI system using NVIDIA Blackwell GPUs",
 )
 
+# Cross-origin browser clients (internal tools, hosted dashboards) need
+# CORS. Set CORS_ORIGINS to a comma-separated allowlist, e.g.
+#   CORS_ORIGINS="https://hr.example.com,https://ops.example.com"
+# When unset, cross-origin browser calls are disallowed entirely.
+_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",")
+            if o.strip()]
+if _origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """
+    Last-resort handler for anything not caught by an endpoint: log the
+    full traceback server-side and return a generic error so internals
+    never leak to live clients.
+    """
+    logger.exception("Unhandled error on %s %s",
+                     request.method, request.url.path)
+    return JSONResponse(content={"error": "Internal server error"},
+                        status_code=500)
+
+
 # Check for CUDA availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+logger.info("Using device: %s", device)
 
 # Load model and classes
 model = load_model(device)
 class_names = get_image_classes()
+
+# Reject oversized uploads before they consume memory / model time.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 @app.post("/classify")
@@ -56,8 +93,12 @@ async def classify_image(file: Annotated[UploadFile, File()]):
     Classify an uploaded image using the AI model.
     """
     try:
-        # Read the uploaded file
+        # Read the uploaded file, enforcing the size limit first
         contents = await file.read()
+        if len(contents) > MAX_UPLOAD_BYTES:
+            return JSONResponse(content={
+                "error": "Image exceeds the 10 MB upload limit"
+            }, status_code=413)
         image = load_image(io.BytesIO(contents))
 
         # Preprocess the image
@@ -68,8 +109,10 @@ async def classify_image(file: Annotated[UploadFile, File()]):
 
         return JSONResponse(content={"predicted_class": predicted_class},
                             status_code=200)
-    # Any failure is surfaced to the client as a 400 error payload.
+    # Any failure is surfaced to the client as a 400 error payload;
+    # unexpected ones are logged server-side for diagnosis.
     except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.warning("Classification failed: %s", e)
         return JSONResponse(content={"error": str(e)}, status_code=400)
 
 
@@ -412,8 +455,6 @@ async def dashboard():
 
 
 if __name__ == "__main__":
-    import os
-
     import uvicorn
 
     # Allow the bind host to be overridden via the HOST environment variable.

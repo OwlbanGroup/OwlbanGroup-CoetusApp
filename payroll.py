@@ -232,8 +232,13 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
 
 def _connect() -> sqlite3.Connection:
     """Open a connection to the payroll database, creating/migrating the schema."""
-    conn = sqlite3.connect(_db_path)
+    # Live-traffic safeguards: a 30s busy timeout keeps concurrent requests
+    # from failing with "database is locked", and WAL mode lets readers
+    # proceed while another connection is writing.
+    conn = sqlite3.connect(_db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(_SCHEMA)
     conn.execute(_PAY_HISTORY_SCHEMA)
     # Migrate databases created before these columns existed.

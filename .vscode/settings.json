@@ -1,4 +1,18 @@
 {
-    "python.defaultInterpreterPath": "${userHome}\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
-    "python.analysis.extraPaths": ["${workspaceFolder}"]
+  "python.defaultInterpreterPath": "${userHome}\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
+  "mcpServers": {
+    "auxly": {
+      "command": "node",
+      "args": [
+        "c:\\Users\\bsean\\.vscode\\extensions\\tzamun-arabia.auxly-extension-0.1.8\\dist\\mcp-server\\index.js"
+      ],
+      "env": {
+        "AUXLY_WORKSPACE_PATH": "c:\\Users\\bsean\\OneDrive\\BLACKBOX-AI\\.github\\.github\\.github\\OSCAR-BROOME-REVENUE\\.blackbox\\Coetus-App-1-OwlbanGroup\\Coetus-App-1-OwlbanGroup\\Coetus-App-1-OwlbanGroup\\OwlbanGroup-CoetusApp",
+        "AUXLY_API_URL": "https://auxly.tzamun.com"
+      }
+    }
+  }
 }

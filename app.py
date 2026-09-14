@@ -10,8 +10,10 @@ from decimal import Decimal
 from typing import Annotated, Optional
 
 import torch
+import auth
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -74,6 +76,55 @@ if _origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+# ---------------------------------------------------------------------------
+# API authentication (env-gated, off by default)
+# ---------------------------------------------------------------------------
+# Set API_AUTH_TOKENS (comma-separated) to require an "X-API-Key" header or
+# an "Authorization: Bearer <token>" on the protected route prefixes
+# (default /payroll; override with AUTH_PROTECTED_PREFIXES). Unset means
+# the API is fully open — local development and CI are unaffected.
+
+@app.middleware("http")
+async def api_auth_middleware(request: Request, call_next):
+    """
+    Credential gate for protected API prefixes.
+
+    No-ops unless API_AUTH_TOKENS is configured. OPTIONS requests (CORS
+    preflights) always pass so browser clients can negotiate access.
+    """
+    if request.method != "OPTIONS" and auth.configured_tokens():
+        if auth.is_protected_path(request.url.path):
+            denial = auth.check_credential(request.headers)
+            if denial is not None:
+                status_code, message = denial
+                headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 \
+                    else None
+                return JSONResponse(content={
+                    "error": message},
+                    status_code=status_code, headers=headers)
+    return await call_next(request)
+
+
+def _custom_openapi():
+    """Augment the schema with security schemes while auth is enabled."""
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(title=app.title, description=app.description,
+                         version=app.version, routes=app.routes)
+    if auth.configured_tokens():
+        schema["components"]["securitySchemes"] = {
+            "ApiKeyAuth": {"type": "apiKey", "in": "header",
+                           "name": "X-API-Key"},
+            "BearerAuth": {"type": "http", "scheme": "bearer"},
+        }
+        schema["security"] = [{"ApiKeyAuth": []}, {"BearerAuth": []}]
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = _custom_openapi  # type: ignore[method-assign]
 
 
 @app.exception_handler(Exception)

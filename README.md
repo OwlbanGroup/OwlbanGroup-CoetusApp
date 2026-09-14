@@ -340,8 +340,6 @@ large-file guard, and flake8.
 
 ## Contributing
 
-## Contributing
-
 Contributions are welcome! Please ensure all changes are tested with GPU acceleration.
 
 ## License

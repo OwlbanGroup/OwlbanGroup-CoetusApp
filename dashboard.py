@@ -108,7 +108,8 @@ async function loadRates() {
   } catch (e) { return; }
   const filing = document.getElementById('f-filing');
   filing.innerHTML = rates.filing_statuses.map(
-      s => '<option value="' + s + '">' + s.replaceAll('_', ' ') + '</option>').join('');
+      s => '<option value="' + s + '">' +
+          s.replaceAll('_', ' ') + '</option>').join('');
   const state = document.getElementById('f-state');
   state.innerHTML = '<option value="">No state tax</option>' +
       rates.states.filter(s => s !== 'none').map(

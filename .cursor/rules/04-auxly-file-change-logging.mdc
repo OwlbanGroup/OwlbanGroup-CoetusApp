@@ -109,9 +109,9 @@ await mcp_extension-auxly_auxly_log_file_change({
 
 ## Why This Rule Exists:
 
-✅ **Complete audit trail** - Know what changed  
-✅ **Easy review** - User sees all modifications  
-✅ **Debugging help** - Track when issues introduced  
+✅ **Complete audit trail** - Know what changed
+✅ **Easy review** - User sees all modifications
+✅ **Debugging help** - Track when issues introduced
 ✅ **Professional** - Proper documentation
 
 ---

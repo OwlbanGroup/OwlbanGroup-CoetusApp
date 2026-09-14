@@ -128,9 +128,9 @@ await mcp_extension-auxly_auxly_update_task({
 
 ## Why This Rule Exists:
 
-✅ **Visual feedback** - User sees active work  
-✅ **Clear status** - Know which task is current  
-✅ **Professional UI** - Animated indicator  
+✅ **Visual feedback** - User sees active work
+✅ **Clear status** - Know which task is current
+✅ **Professional UI** - Animated indicator
 ✅ **Single focus** - One task at a time
 
 ---

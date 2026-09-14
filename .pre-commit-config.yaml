@@ -1,0 +1,17 @@
+# See https://pre-commit.com for install/usage:
+#   pip install pre-commit
+#   pre-commit install        # activate on every future `git commit`
+#   pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8

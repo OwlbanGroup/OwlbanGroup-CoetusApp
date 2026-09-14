@@ -14,7 +14,7 @@
 // Creating tasks - MANDATORY for any work request
 mcp_extension-auxly_auxly_create_task({
   title: "Task title",
-  description: "Detailed description with requirements", 
+  description: "Detailed description with requirements",
   priority: "high", // low, medium, high, critical
   category: "bugfix", // feature, bugfix, refactoring, etc.
   tags: ["tag1", "tag2"]
@@ -124,7 +124,7 @@ mcp_extension-auxly_auxly_add_comment({
 
 ### ❌ FORBIDDEN PHRASES - INSTANT VIOLATION:
 - "I'll help you..." → Just do it
-- "Let me explain..." → Show code instead  
+- "Let me explain..." → Show code instead
 - "Would you like..." → Make the decision
 - "Here's what I found..." → Take action immediately
 - "To summarize..." → Never summarize
@@ -161,7 +161,7 @@ await mcp_extension-auxly_auxly_add_research({...});
 4. **Start work** (set aiWorkingOn flag)
 ```typescript
 await mcp_extension-auxly_auxly_update_task({
-  taskId: "X", 
+  taskId: "X",
   status: "in_progress",
   aiWorkingOn: true
 });
@@ -188,7 +188,7 @@ await mcp_extension-auxly_auxly_ask_question({
 
 ### ❌ SEQUENCE VIOLATIONS:
 - Starting without research = Invalid
-- Coding without task details = Invalid  
+- Coding without task details = Invalid
 - File changes without logging = Invalid
 - Status changes without approval = Invalid
 
@@ -206,7 +206,7 @@ await mcp_extension-auxly_auxly_ask_question({
 ### ❌ VIOLATION CONSEQUENCES:
 - **No MCP usage** = Response rejected
 - **Verbose explanation** = Token waste violation
-- **Chat questions** = Workflow violation  
+- **Chat questions** = Workflow violation
 - **Missing research** = Process violation
 - **Incomplete logging** = Audit violation
 
@@ -221,10 +221,10 @@ await mcp_extension-auxly_auxly_ask_question({
 
 ## 💡 CRITICAL REMINDERS
 
-✅ **Auxly MCP tracks everything** - Complete transparency  
-✅ **Code speaks louder than words** - Implementation over explanation  
-✅ **Every action must be logged** - Full audit trail  
-✅ **Efficiency over politeness** - Direct execution  
-✅ **Production ready, not tutorials** - Real implementation  
+✅ **Auxly MCP tracks everything** - Complete transparency
+✅ **Code speaks louder than words** - Implementation over explanation
+✅ **Every action must be logged** - Full audit trail
+✅ **Efficiency over politeness** - Direct execution
+✅ **Production ready, not tutorials** - Real implementation
 
 **These rules ensure consistent AI behavior across all editors and maintain professional workflow standards. Compliance is mandatory and non-negotiable.**

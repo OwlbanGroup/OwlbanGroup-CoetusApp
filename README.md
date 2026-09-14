@@ -292,6 +292,53 @@ print(f"CUDA available: {torch.cuda.is_available()}")
 print(f"GPU count: {torch.cuda.device_count()}")
 print(f"Current GPU: {torch.cuda.get_device_name(0)}")
 ```
+## Development
+
+### Dev tooling install
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+`requirements-dev.txt` adds lint/test tooling on top of the runtime deps:
+`flake8`, `pytest-cov`, and `pre-commit`.
+
+### Tests and coverage
+
+```bash
+python -m pytest test_payroll.py test_synthetic_data.py -v
+
+# Coverage report (current: ~92% total)
+python -m pytest test_payroll.py test_synthetic_data.py -q \
+  --cov=payroll --cov=app --cov=synthetic_data --cov=dashboard \
+  --cov=data_utils --cov=model --cov=payslip_pdf --cov-report=term-missing
+```
+
+### Lint
+
+```bash
+python -m flake8 .
+```
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `flake8 .` and `pytest -q`
+on every push to `main` and every pull request, using CPU-only torch wheels
+to keep runs fast (~1 minute).
+
+### Pre-commit hooks
+
+Run checks automatically on each commit:
+
+```bash
+pre-commit install          # one-time activation for this clone
+pre-commit run --all-files  # manual full run
+```
+
+Hooks: trailing-whitespace / end-of-file fixers, YAML validation,
+large-file guard, and flake8.
+
+## Contributing
 
 ## Contributing
 

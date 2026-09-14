@@ -39,3 +39,11 @@
 - [x] Add /synthetic/profiles, /synthetic/dialogue, /synthetic/face, /synthetic/voice, /synthetic/capabilities endpoints to app.py
 - [x] Add test_synthetic_data.py unit + API tests (`python -m pytest test_synthetic_data.py -v`)
 - [x] Document the synthetic data API in README.md
+
+## Engineering Hygiene
+
+- [x] GitHub Actions CI: flake8 + pytest on every push/PR (CPU-only torch wheels)
+- [x] Untrack runtime artifact `server_pid.txt`
+- [x] requirements-dev.txt (flake8, pytest-cov, pre-commit) + CI wiring
+- [x] Pre-commit hooks (whitespace/EOF/YAML/large-file + flake8)
+- [x] Coverage report: ~92% total (payroll 96%, synthetic 98%, app 87%)

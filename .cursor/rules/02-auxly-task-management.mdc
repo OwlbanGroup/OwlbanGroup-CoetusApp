@@ -16,13 +16,13 @@ priority: 1
 
 ```typescript
 // STEP 1: Check TODO tasks
-const todoTasks = await mcp_extension-auxly_auxly_list_tasks({ 
-  status: "todo" 
+const todoTasks = await mcp_extension-auxly_auxly_list_tasks({
+  status: "todo"
 });
 
 // STEP 2: Check IN_PROGRESS tasks
-const inProgressTasks = await mcp_extension-auxly_auxly_list_tasks({ 
-  status: "in_progress" 
+const inProgressTasks = await mcp_extension-auxly_auxly_list_tasks({
+  status: "in_progress"
 });
 
 // STEP 3: Read all task titles - check for duplicates
@@ -96,9 +96,9 @@ await mcp_extension-auxly_auxly_update_task({
 
 ## Why This Rule Exists:
 
-✅ **Prevents duplicates** - Clean task list  
-✅ **Avoids rework** - See what's already done  
-✅ **Full context** - Understand requirements  
+✅ **Prevents duplicates** - Clean task list
+✅ **Avoids rework** - See what's already done
+✅ **Full context** - Understand requirements
 ✅ **Professional** - Thorough approach
 
 ---

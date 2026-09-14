@@ -125,9 +125,9 @@ await mcp_extension-auxly_auxly_add_comment({
 
 ## Why This Rule Exists:
 
-✅ **Context** - User understands progress  
-✅ **Decisions documented** - Why things were done  
-✅ **Easy pickup** - Continue work later  
+✅ **Context** - User understands progress
+✅ **Decisions documented** - Why things were done
+✅ **Easy pickup** - Continue work later
 ✅ **Professional** - Complete documentation
 
 ---

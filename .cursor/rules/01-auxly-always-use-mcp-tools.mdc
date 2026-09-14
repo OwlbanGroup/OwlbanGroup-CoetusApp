@@ -29,13 +29,13 @@ mcp_extension-auxly_auxly_update_task({
 })
 
 // Getting task details
-mcp_extension-auxly_auxly_get_task({ 
-  taskId: "X" 
+mcp_extension-auxly_auxly_get_task({
+  taskId: "X"
 })
 
 // Listing tasks
-mcp_extension-auxly_auxly_list_tasks({ 
-  status: "todo" 
+mcp_extension-auxly_auxly_list_tasks({
+  status: "todo"
 })
 
 // Asking questions
@@ -75,8 +75,8 @@ mcp_extension-auxly_auxly_add_comment({
 })
 
 // Deleting tasks
-mcp_extension-auxly_auxly_delete_task({ 
-  taskId: "X" 
+mcp_extension-auxly_auxly_delete_task({
+  taskId: "X"
 })
 ```
 
@@ -93,9 +93,9 @@ mcp_extension-auxly_auxly_delete_task({
 
 ## Why This Rule Exists:
 
-✅ **Complete transparency** - All work visible in task panel  
-✅ **Audit trail** - Every action tracked  
-✅ **User control** - User sees everything  
+✅ **Complete transparency** - All work visible in task panel
+✅ **Audit trail** - Every action tracked
+✅ **User control** - User sees everything
 ✅ **Professional workflow** - Proper task management
 
 ---
